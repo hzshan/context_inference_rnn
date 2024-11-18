@@ -115,7 +115,7 @@ def make_anti_epoch(task_var, Te, sigma_n):
     return make_pro_epoch((task_var + 1) % 2, Te, sigma_n)
 
 
-def make_go_trial(task_var, sigma_n, anti=False):
+def make_go_trial(task_var, sigma_n, anti=False, delay=False):
     """
     Generates a pro go trial with delay.
     Composed of input (s, Tt x 5) and target output (y, Tt x 3).
@@ -133,16 +133,27 @@ def make_go_trial(task_var, sigma_n, anti=False):
     delay_Te = np.max([np.random.geometric(delay_to_response), min_Te])
     response_Te = 100
 
+
     fixation_epoch = make_delay_or_fixation_epoch(task_var, fixation_Te, sigma_n)
-    present_epoch = make_pro_epoch(task_var, present_Te, sigma_n)
+    if anti:
+        present_epoch = make_anti_epoch(task_var, present_Te, sigma_n)
+    else:
+        present_epoch = make_pro_epoch(task_var, present_Te, sigma_n)
     delay_epoch = make_delay_or_fixation_epoch(task_var, delay_Te, sigma_n)
     response_epoch = make_response_epoch(task_var, response_Te, sigma_n)
 
-    boundaries = np.cumsum([fixation_Te, present_Te, delay_Te, response_Te])
+    if delay:
+        boundaries = np.cumsum([fixation_Te, present_Te, delay_Te, response_Te])
+        return (merge_epochs(
+            [fixation_epoch, present_epoch, delay_epoch, response_epoch]), 
+            boundaries)
+    else:
+        boundaries = np.cumsum([fixation_Te, present_Te, response_Te])
+        return (merge_epochs(
+            [fixation_epoch, present_epoch, response_epoch]), 
+            boundaries)
 
-    return (merge_epochs(
-        [fixation_epoch, present_epoch, delay_epoch, response_epoch]), 
-        boundaries)
+
 
 
 def merge_epochs(epochs):
