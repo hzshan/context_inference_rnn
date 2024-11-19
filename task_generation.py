@@ -48,7 +48,30 @@ def make_stim_input(stim, Te=10):
         return mean_stim
 
 
-def make_input(mod1_stim, mod2_stim, fixation, Te, sigma_n, superimpose=False):
+def make_input(stim, fixation, Te, sigma_n, superimpose=False):
+    """
+    Generates the input (s) for a given epoch. Assuming a single modality.
+
+    Produces a Te x 3 matrix of noisy inputs for a given stimulus pair and
+    fixation cue. The first two columns are the inputs for the first stimulus,
+    the second two columns are the inputs for the second stimulus, and the
+    last column is the fixation cue.
+    """
+    assert stim in [-1, 0, 1]
+
+    stim_input = make_stim_input(stim, Te)
+
+    if superimpose:
+        stim_input += make_stim_input(1 - stim, Te) * 0.5
+
+    assert fixation in [0, 1]
+    fixation_input = np.random.normal(fixation, sigma_n, (Te, 1))
+
+    mean_input = np.hstack([stim_input, fixation_input]).T
+    return np.random.normal(mean_input, sigma_n)
+
+
+def make_bimodal_input(mod1_stim, mod2_stim, fixation, Te, sigma_n, superimpose=False):
     """
     Generates the input (s) for a given epoch.
 
@@ -86,9 +109,6 @@ def make_target_output(response, fixation, Te):
     return np.hstack([target_output, fixation_output]).T
 
 
-
-
-
 def make_delay_or_fixation_epoch(task_var, Te, sigma_n):
     """
     Generates a delay epoch or fixation epoch (D or F).
@@ -96,7 +116,7 @@ def make_delay_or_fixation_epoch(task_var, Te, sigma_n):
     """
 
     assert task_var in [0, 1]
-    return {'s':make_input(mod1_stim=-1, mod2_stim=-1, # no stimulus presentation
+    return {'s':make_input(stim=-1, # no stimulus presentation
                           fixation=1,
                           Te=Te,
                           sigma_n=sigma_n),
@@ -112,7 +132,7 @@ def make_response_epoch(task_var, Te, sigma_n):
     """
 
     assert task_var in [0, 1]
-    return {'s':make_input(mod1_stim=-1, mod2_stim=-1, # no stimulus presentation
+    return {'s':make_input(stim=-1, # no stimulus presentation
                           fixation=0,
                           Te=Te,
                           sigma_n=sigma_n),
@@ -128,14 +148,8 @@ def make_pro_epoch(task_var, Te, sigma_n):
     """
 
     # randomly choose a modality to present the stimulus
-    if np.random.binomial(1, 0.5):
-        mod1_stim = task_var
-        mod2_stim = -1
-    else:
-        mod1_stim = -1
-        mod2_stim = task_var
 
-    return {'s':make_input(mod1_stim, mod2_stim,
+    return {'s':make_input(task_var,
                           fixation=1, Te=Te,
                           sigma_n=sigma_n),
             'y':make_target_output(response=-1,
@@ -167,13 +181,7 @@ def make_superimposed_epoch(task_var, Te, sigma_n):
     Composed of input (s, Te x 5) and target output (y, Te x 3).
     """
 
-    if np.random.binomial(1, 0.5):
-        mod1_stim = task_var
-        mod2_stim = -1
-    else:
-        mod1_stim = -1
-        mod2_stim = task_var
-    return {'s':make_input(mod1_stim=mod1_stim, mod2_stim=mod2_stim,
+    return {'s':make_input(stim=task_var,
                           fixation=1, Te=Te,
                           sigma_n=sigma_n, superimpose=True),
             'y':make_target_output(response=-1,
@@ -183,6 +191,19 @@ def make_superimposed_epoch(task_var, Te, sigma_n):
 
 
 def compose_trial(string_of_epochs:str, task_var, sigma_n, transition_probs=None):
+    """
+    Generates a trial composed of a sequence of epochs.
+
+    string_of_epochs: a string of epoch symbols separated by '->'
+    task_var: the task variable (0 or 1)
+    sigma_n: noise standard deviation
+    transition_probs: a list of transition probabilities between epochs
+
+    Returns:
+    trial: a dictionary containing the input (s) and target output (y) of the trial
+    boundaries: a list of boundaries (in units of timesteps) between epochs
+    string_of_epochs: the string of epochs used to generate the trial
+    """
     epoch_symbols = string_of_epochs.split('->')
 
     if transition_probs is not None:
