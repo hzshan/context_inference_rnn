@@ -48,7 +48,7 @@ def make_stim_input(stim, Te=10):
         return mean_stim
 
 
-def make_input(stim, fixation, Te, sigma_n, superimpose=False):
+def make_input(stim, fixation, Te, sigma_n, superimpose=False, contrast=1):
     """
     Generates the input (s) for a given epoch. Assuming a single modality.
 
@@ -59,9 +59,10 @@ def make_input(stim, fixation, Te, sigma_n, superimpose=False):
     """
     assert stim in [-1, 0, 1]
 
-    stim_input = make_stim_input(stim, Te)
+    stim_input = make_stim_input(stim, Te) * contrast
 
     if superimpose:
+        assert contrast > 0.5
         stim_input += make_stim_input(1 - stim, Te) * 0.5
 
     assert fixation in [0, 1]
@@ -75,7 +76,7 @@ def make_bimodal_input(mod1_stim, mod2_stim, fixation, Te, sigma_n, superimpose=
     """
     Generates the input (s) for a given epoch.
 
-    Produces a Te x 5 matrix of noisy inputs for a given stimulus pair and
+    Produces a Te x 3 matrix of noisy inputs for a given stimulus pair and
     fixation cue. The first two columns are the inputs for the first stimulus,
     the second two columns are the inputs for the second stimulus, and the
     last column is the fixation cue.
@@ -112,7 +113,7 @@ def make_target_output(response, fixation, Te):
 def make_delay_or_fixation_epoch(task_var, Te, sigma_n):
     """
     Generates a delay epoch or fixation epoch (D or F).
-    Composed of input (s, Te x 5) and target output (y, Te x 3).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     assert task_var in [0, 1]
@@ -128,7 +129,7 @@ def make_delay_or_fixation_epoch(task_var, Te, sigma_n):
 def make_response_epoch(task_var, Te, sigma_n):
     """
     Generates a response epoch (R).
-    Composed of input (s, Te x 5) and target output (y, Te x 3).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     assert task_var in [0, 1]
@@ -144,7 +145,7 @@ def make_response_epoch(task_var, Te, sigma_n):
 def make_pro_epoch(task_var, Te, sigma_n):
     """
     Generates a pro-stimulus epoch (S_P).
-    Composed of input (s, Te x 5) and target output (y, Te x 3).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     # randomly choose a modality to present the stimulus
@@ -160,7 +161,7 @@ def make_pro_epoch(task_var, Te, sigma_n):
 def make_anti_epoch(task_var, Te, sigma_n):
     """
     Generates a anti-stimulus epoch (S_A).
-    Composed of input (s, Te x 5) and target output (y, Te x 3).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
     
     return make_pro_epoch((task_var + 1) % 2, Te, sigma_n)
@@ -169,7 +170,7 @@ def make_anti_epoch(task_var, Te, sigma_n):
 def make_distractor_epoch(task_var, Te, sigma_n):
     """
     Generates a distractor stimulus epoch (S_D).
-    Composed of input (s, Te x 5) and target output (y, Te x 3).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
     distractor_var = np.random.binomial(1, 0.5)
     return make_pro_epoch(distractor_var, Te, sigma_n)
@@ -178,7 +179,7 @@ def make_distractor_epoch(task_var, Te, sigma_n):
 def make_superimposed_epoch(task_var, Te, sigma_n):
     """
     Generates a superimposed stimulus epoch (S_S).
-    Composed of input (s, Te x 5) and target output (y, Te x 3).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=task_var,
@@ -256,7 +257,7 @@ def compose_trial(string_of_epochs:str, task_var, sigma_n, transition_probs=None
 def make_go_trial(task_var, sigma_n, anti=False, delay=False):
     """
     Generates a pro/anti go trial with or without delay (PRO/ANTI/PRO_D/ANTI_D).
-    Composed of input (s, Tt x 5) and target output (y, Tt x 3).
+    Composed of input (s, Tt x 3) and target output (y, Tt x 3).
     """
     if anti is True and delay is True:
         string_of_epochs = 'F->S_A->D->R'
@@ -273,7 +274,7 @@ def make_go_trial(task_var, sigma_n, anti=False, delay=False):
 def make_order_trial(task_var, sigma_n, order=1):
     """
     Generates an order trial (ORDER1/ORDER2).
-    Composed of input (s, Tt x 5) and target output (y, Tt x 3).
+    Composed of input (s, Tt x 3) and target output (y, Tt x 3).
     """
 
     if order == 1:
