@@ -78,6 +78,8 @@ def expanded_transition_prob(c_pre, z_pre, c_cur, z_cur, p_stay=0.9):
 
 
 if __name__ == '__main__':
+
+    ######################### task #####################
     p_stay = 0.9
     sigma = 0.1
 
@@ -97,8 +99,8 @@ if __name__ == '__main__':
         else:
             i_cur = np.random.choice(len(cz_list), p=transition_mtrx[i_pre])
         c_cur, z_cur = cz_list[i_cur]
-        if c_cur != c_pre:
-            x = np.random.choice(x_set)
+        # if c_cur != c_pre:
+        #     x = np.random.choice(x_set)
         s, y = sample_emission(z_cur, x, sigma_s=sigma, sigma_y=sigma)
         cue = sample_cue(c_cur, z_cur, sigma_cue=sigma)
         c_arr.append(c_cur)
@@ -111,61 +113,74 @@ if __name__ == '__main__':
     c_arr, z_arr, x_arr = np.array(c_arr), np.array(z_arr), np.array(x_arr)
     s_arr, y_arr, cue_arr = np.array(s_arr), np.array(y_arr), np.array(cue_arr)
 
-    ###########
-    # given s, y, cue, infer c, z, x
+    ##################### given s, y, cue, infer c, z, x  ####################
+    nT = len(s_arr)
+    log_likes = np.zeros((nT, len(x_set), len(cz_list)))
+    for it in range(nT):
+        for ix, x in enumerate(x_set):
+            for icz, (c, z) in enumerate(cz_list):
+                log_likes[it, ix, icz] = compute_emission_logp(s_arr[it], y_arr[it], z, x, sigma, sigma)
+                log_likes[it, ix, icz] += compute_cue_logp(cue_arr[it], c, z, sigma)
+
+    log_eps = 1e-10
     p0_cz = np.zeros(len(cz_list))
     p0_cz[cz_list.index((1, 0))] = 0.5
     p0_cz[cz_list.index((-1, 0))] = 0.5
-    p0_cz += 1e-10
+    p0_cz += log_eps
     p0_cz /= p0_cz.sum()
-    p0_x = np.arange(len(x_set)) / len(x_set)
 
-    q_czt_arr = np.zeros((len(s_arr), len(cz_list)))
-    q_xt_arr = np.zeros((len(s_arr), len(x_set)))
-    c_infer_arr = np.zeros(len(s_arr))
-    z_infer_arr = np.zeros(len(s_arr))
-    x_infer_arr = np.zeros(len(s_arr))
-    for it in range(len(s_arr)):
-        s_t = s_arr[it]
-        y_t = y_arr[it]
-        cue_t = cue_arr[it]
-        logp_collect = np.zeros((len(cz_list), len(x_set)))
-        for icz, (c, z) in enumerate(cz_list):
-            for ix, x in enumerate(x_set):
-                logp_collect[icz, ix] = compute_emission_logp(s_t, y_t, z, x, sigma, sigma)
-                logp_collect[icz, ix] += compute_cue_logp(cue_t, c, z, sigma)
-        if it == 0:
-            q_xt = p0_x
-            alpha_cz = np.log(p0_cz) + logp_collect @ q_xt
-            q_czt = np.exp(alpha_cz - logsumexp(alpha_cz))
-        else:
-            q_xt = q_xt_arr[it - 1]
-            for iter in range(10):
-                with np.errstate(divide="ignore"):
-                    alpha_cz = np.log(q_czt_arr[it - 1] @ transition_mtrx) + logp_collect @ q_xt
-                q_czt = np.exp(alpha_cz - logsumexp(alpha_cz))
-                alpha_x = q_czt @ logp_collect
-                q_xt = np.exp(alpha_x - logsumexp(alpha_x))
+    ################### forward backward ##############################
+    # alphas = np.zeros(log_likes.shape)
+    # alphas[0] = np.log(p0_cz) + log_likes[0]
+    # for it in range(nT - 1):
+    #     m = np.max(alphas[it])
+    #     with np.errstate(divide='ignore'):
+    #         alphas[it + 1] = np.log(np.dot(np.exp(alphas[it] - m), transition_mtrx)) + m + log_likes[it + 1]
+    # normalizer = logsumexp(alphas[-1])
+    # betas = np.zeros(log_likes.shape)
+    # betas[nT - 1] = 0
+    # for it in range(nT - 2, -1, -1):
+    #     tmp = (log_likes[it + 1] + betas[it + 1]).T
+    #     m = np.max(tmp)
+    #     betas[it] = (np.log(np.dot(transition_mtrx, np.exp(tmp - m))) + m).T
+    # expected_states = alphas + betas
+    # expected_states -= logsumexp(expected_states, axis=(-1, -2), keepdims=True)
+    # expected_states = np.exp(expected_states)
 
-        q_xt_arr[it] = q_xt
-        q_czt_arr[it] = q_czt
-        c_infer, z_infer = cz_list[np.argmax(q_czt)]
-        c_infer_arr[it] = c_infer
-        z_infer_arr[it] = z_infer
-        x_infer_arr[it] = 0 if q_xt[0] == q_xt[1] else x_set[np.argmax(q_xt)]
+    ####################### viterbi ##############################
+    scores = np.zeros((nT, len(x_set), len(cz_list)))
+    args = np.zeros((nT, len(x_set), len(cz_list)), dtype=int)
+    for it in range(nT - 2, -1, -1):
+        vals = (scores[it + 1] + log_likes[it + 1]).T
+        vals = np.log(transition_mtrx[:, :, None] + log_eps) + vals[None, :, :]
+        for ix in range(len(x_set)):
+            for icz in range(len(cz_list)):
+                args[it + 1, ix, icz] = np.argmax(vals[icz, :, ix])
+                scores[it, ix, icz] = np.max(vals[icz, :, ix])
 
+    scores_ = np.log(p0_cz) + scores[0] + log_likes[0]
+    ind_ = np.unravel_index(np.argmax(scores_, axis=None), scores_.shape)
+    x_ = x_set[ind_[0]]
+    cz_ = np.zeros(nT, dtype=int)
+    cz_[0] = ind_[1]
+    for it in range(1, nT):
+        cz_[it] = args[it, ind_[0], int(cz_[it - 1])]
+    cz_ = np.array([cz_list[cur] for cur in cz_])
 
-    ########################
-    fig, axes = plt.subplots(8, 1, figsize=(7, 7), sharex=True)
-    axes[0].plot(c_arr)
-    axes[0].plot(c_infer_arr, alpha=0.5)
+    ######################## plotting #######################
+    fig, axes = plt.subplots(8, 1, figsize=(7, 10), sharex=True)
+    axes[0].plot(c_arr, label='ground truth')
+    axes[0].plot(cz_[:, 0], alpha=0.5, label='Viterbi')
     axes[0].set_ylabel('c')
-    axes[1].plot(z_arr)
-    axes[1].plot(z_infer_arr, alpha=0.5)
+    axes[0].legend(bbox_to_anchor=(1.05, 0.5), loc='center')
+    axes[1].plot(z_arr, label='ground truth')
+    axes[1].plot(cz_[:, 1], alpha=0.5, label='Viterbi')
     axes[1].set_ylabel('z')
-    axes[2].plot(x_arr)
-    axes[2].plot(x_infer_arr, alpha=0.5)
+    axes[1].legend(bbox_to_anchor=(1.05, 0.5), loc='center')
+    axes[2].plot(x_arr, label='ground truth')
+    axes[2].plot([x_] * nT, alpha=0.5, label='Viterbi')
     axes[2].set_ylabel('x')
+    axes[2].legend(bbox_to_anchor=(1.05, 0.5), loc='center')
     axes[3].plot(s_arr[:, 0])
     axes[3].set_ylabel('s[0]')
     axes[4].plot(s_arr[:, 1])
@@ -177,3 +192,4 @@ if __name__ == '__main__':
     axes[7].plot(cue_arr)
     axes[7].set_ylabel('cue')
     fig.show()
+    fig.savefig('./figures/example_inference.png', bbox_inches='tight', transparent=True)
