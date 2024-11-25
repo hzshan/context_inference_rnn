@@ -6,31 +6,30 @@ Te: duration of epoch
 Tt: duration of trial
 sigma_n: noise standard deviation
 
-Epoch symbols:
-F: fixation
-S_P: pro stimulus
-S_A: anti stimulus
-S_D: distractor stimulus
-S_S: pro stimulus, superimposed with a weak anti stimulus
-D: delay
-R: response
-
-Trial symbols:
+Tasks
 PRO: respond to the stimulus, F->S_P->R
 PRO_D: respond to the stimulus after delay, F->S_P->D->R
 ANTI: respond to the opposite stimulus, F->S_A->R
-ANTI_D: respond to the opposite stimulus with delay, F->S_A->D->R
-ORDER1: respond to the first stimulus, F->S_P->S_D->R
-ORDER2: respond to the second stimulus, F->S_D->S_P->R
+ANTI_D: respond to the opposite stimulus after delay, F->S_A->D->R
+ORDER: respond to the stimulus coming on first, F->S_P->S_B->R
 DM: respond to the stronger stimulus, F->S_S->R
-
-
+DM_D: respond to the stronger stimulus, which may come on first or second, F->S_P->S_AW->R or F->S_AW->S_P->R
 """
+
+epoch_dictionary = {'F': 0, # fixation
+            'S_P': 1, # pro stimulus
+            'S_A': 2, # anti stimulus
+            'S_B': 3, # both stimuli on with equal intensity
+            'S_S': 4, # pro stimulus, superimposed with a weak anti stimulus
+            'S_AW': 5, # weak anti stimulus
+            'D': 6, # delay
+            'R': 7} # response
+
 
 MIN_Te = 50
 RESPONSE_Te = 50
 
-def make_stim_input(stim, Te=10):
+def make_stim_input(stim, Te):
     """
     Produce a Te x 2 matrix of noisy inputs for a given stimulus.
     if stim = -1, return zero-mean random noise
@@ -48,7 +47,7 @@ def make_stim_input(stim, Te=10):
         return mean_stim
 
 
-def make_input(stim, fixation, Te, sigma_n, superimpose=False, contrast=1):
+def make_input(stim, fixation, Te, sigma_n, contrast=1, other_stim_contrast=0):
     """
     Generates the input (s) for a given epoch. Assuming a single modality.
 
@@ -61,9 +60,7 @@ def make_input(stim, fixation, Te, sigma_n, superimpose=False, contrast=1):
 
     stim_input = make_stim_input(stim, Te) * contrast
 
-    if superimpose:
-        assert contrast > 0.5
-        stim_input += make_stim_input(1 - stim, Te) * 0.5
+    stim_input += make_stim_input(1 - stim, Te) * other_stim_contrast
 
     assert fixation in [0, 1]
     fixation_input = np.random.normal(fixation, sigma_n, (Te, 1))
@@ -116,7 +113,6 @@ def make_delay_or_fixation_epoch(task_var, Te, sigma_n):
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    assert task_var in [0, 1]
     return {'s':make_input(stim=-1, # no stimulus presentation
                           fixation=1,
                           Te=Te,
@@ -132,7 +128,6 @@ def make_response_epoch(task_var, Te, sigma_n):
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    assert task_var in [0, 1]
     return {'s':make_input(stim=-1, # no stimulus presentation
                           fixation=0,
                           Te=Te,
@@ -167,15 +162,6 @@ def make_anti_epoch(task_var, Te, sigma_n):
     return make_pro_epoch((task_var + 1) % 2, Te, sigma_n)
 
 
-def make_distractor_epoch(task_var, Te, sigma_n):
-    """
-    Generates a distractor stimulus epoch (S_D).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
-    """
-    distractor_var = np.random.binomial(1, 0.5)
-    return make_pro_epoch(distractor_var, Te, sigma_n)
-
-
 def make_superimposed_epoch(task_var, Te, sigma_n):
     """
     Generates a superimposed stimulus epoch (S_S).
@@ -184,11 +170,24 @@ def make_superimposed_epoch(task_var, Te, sigma_n):
 
     return {'s':make_input(stim=task_var,
                           fixation=1, Te=Te,
-                          sigma_n=sigma_n, superimpose=True),
+                          sigma_n=sigma_n, other_stim_contrast=0.5),
             'y':make_target_output(response=-1,
                                   fixation=1,
                                   Te=Te)}
 
+
+def make_both_epoch(task_var, Te, sigma_n):
+    """
+    Generates a both-stimuli-on epoch (S_B).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    """
+
+    return {'s':make_input(stim=task_var,
+                          fixation=1, Te=Te,
+                          sigma_n=sigma_n, other_stim_contrast=1),
+            'y':make_target_output(response=-1,
+                                  fixation=1,
+                                  Te=Te)}
 
 
 def compose_trial(string_of_epochs:str, task_var, sigma_n, transition_probs=None):
@@ -198,7 +197,8 @@ def compose_trial(string_of_epochs:str, task_var, sigma_n, transition_probs=None
     string_of_epochs: a string of epoch symbols separated by '->'
     task_var: the task variable (0 or 1)
     sigma_n: noise standard deviation
-    transition_probs: a list of transition probabilities between epochs
+    transition_probs (default to None): a list of transition probabilities
+    between epochs. If None, p_out for all epochs is 0.01.
 
     Returns:
     trial: a dictionary containing the input (s) and target output (y) of the trial
@@ -232,9 +232,9 @@ def compose_trial(string_of_epochs:str, task_var, sigma_n, transition_probs=None
             epochs.append(
                 make_anti_epoch(task_var, Te=Te, sigma_n=sigma_n))
 
-        elif epoch_symbol == 'S_D':
+        elif epoch_symbol == 'S_B':
             epochs.append(
-                make_distractor_epoch(task_var, Te=Te, sigma_n=sigma_n))
+                make_both_epoch(task_var, Te=Te, sigma_n=sigma_n))
 
         elif epoch_symbol == 'S_S':
             epochs.append(
