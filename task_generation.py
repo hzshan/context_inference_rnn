@@ -10,25 +10,28 @@ sig_y: target output noise standard deviation
 x: dictionary containing the task variables
 
 Tasks
-PRO: respond to the stimulus, F->S_P->R
-PRO_D: respond to the stimulus after delay, F->S_P->D->R
-ANTI: respond to the opposite stimulus, F->S_A->R
-ANTI_D: respond to the opposite stimulus after delay, F->S_A->D->R
-ORDER: respond to the stimulus coming on first, F->S_P->S_B->R
-DM: respond to the stronger stimulus, F->S_S->R
+PRO_D: "DelayPro": respond to the stimulus once fixation is off, F->S_P->R_P
+PRO_M: "MemoryPro" respond to the stimulus after a memory period, F->S_P->D->R_M
+PRO_R: "ResponsePro" respond to the stimulus ASAP, F->R_P
+'ANTI_D': "DelayAnti": respond to the opposite once fixation is off, F->S_A->R_A
+'ANTI_M': "MemoryAnti": respond to the opposite after memory period, F->S_A->D->R_M
+'ANTI_R': "ResponseAnti": respond to the opposite ASAP, F->R_A
+ORDER: respond to the stimulus coming on first, F->S_P->S_B->R_M
+DM: respond to the stronger stimulus, F->S_S->R_M
 """
 
 task_dict = {
-    'PRO': 'F->S_P->R',
-    'PRO_D': 'F->S_P->D->R',
-    'ANTI': 'F->S_A->R',
-    'ANTI_D': 'F->S_A->D->R',
-    'ORDER1': 'F->S_P->S_B->R',
-    'DM': 'F->S_S->R',
+    'PRO_D': 'F->S_P->R_P',
+    'PRO_M': 'F->S_P->D->R_M',
+    'PRO_R': 'F->R_P',
+    'ANTI_D': 'F->S_A->R_A',
+    'ANTI_M': 'F->S_A->D->R_M',
+    'ANTI_R': 'F->R_A',
+    'ORDER': 'F->S_P->S_B->R_M',
+    'DM': 'F->S_S->R_M'
 }
 
 MIN_Te = 50  # minimum number of time steps in an epoch
-RESPONSE_Te = 50  # number of time steps in the response epoch
 
 def make_stim_input(stim: int, Te: int):
     """
@@ -153,13 +156,45 @@ def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
                                   sig_y=sig_y)}
 
 
-def make_response_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_response_from_memory_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
     """
-    Generates a response epoch (R).
+    Generates a response epoch (R_M).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=-1, # no stimulus presentation
+                          fixation=0,
+                          Te=Te,
+                          sig_s=sig_s),
+            'y':make_target_output(response=x['theta_task'],  #respond to the task variable
+                                  fixation=0,
+                                  Te=Te,
+                                  sig_y=sig_y)}
+
+
+def make_response_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+    """
+    Generates a response epoch that responds to the presented stimulus. (R_P).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    """
+
+    return {'s':make_input(stim=x['theta_task'], # no stimulus presentation
+                          fixation=0,
+                          Te=Te,
+                          sig_s=sig_s),
+            'y':make_target_output(response=x['theta_task'],  #respond to the task variable
+                                  fixation=0,
+                                  Te=Te,
+                                  sig_y=sig_y)}
+
+
+def make_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+    """
+    Generates a response epoch that responds to the presented stimulus. (R_A).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    """
+
+    return {'s':make_input(stim=(x['theta_task'] + 1) % 2, # no stimulus presentation
                           fixation=0,
                           Te=Te,
                           sig_s=sig_s),
@@ -191,8 +226,9 @@ def make_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
     Generates a anti-stimulus epoch (S_A).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
-    
-    return make_pro_epoch((x['theta_task'] + 1) % 2,
+    x_anti = x.copy()
+    x_anti['theta_task'] = (x['theta_task'] + 1) % 2
+    return make_pro_epoch(x_anti,
                           Te,
                           sig_s=sig_s,
                           sig_y=sig_y)
@@ -260,8 +296,14 @@ def parse_z_t(epoch_symbol: str, x: dict, sig_s: float, sig_y: float, Te: int):
     elif epoch_symbol == 'D':
         return make_delay_or_fixation_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
 
-    elif epoch_symbol == 'R':
-        return make_response_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
+    elif epoch_symbol == 'R_M':
+        return make_response_from_memory_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
+    
+    elif epoch_symbol == 'R_P':
+        return make_response_pro_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
+    
+    elif epoch_symbol == 'R_A':
+        return make_response_anti_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
     
     else:
         raise ValueError(f'Invalid epoch symbol: {epoch_symbol}')
@@ -280,7 +322,8 @@ def compose_trial(seq_of_epochs: str,
     sig_s: noise standard deviation for input
     sig_y: noise standard deviation for target output
     transition_probs (default to None): the i-th element is the probability of
-    transitioning to the i+1-th epoch. If None, it is 0.01 for all epochs.
+    transitioning to the i+1-th epoch. For the last epoch, it is the 
+    probability of ending the trial. If None, it is 0.01 for all epochs.
 
     Returns:
     trial: a dictionary containing the input (s) and target output (y) of the trial
@@ -289,15 +332,13 @@ def compose_trial(seq_of_epochs: str,
     epoch_symbols = seq_of_epochs.split('->')
 
     if transition_probs is not None:
-        assert len(transition_probs) == len(epoch_symbols) - 1
+        assert len(transition_probs) == len(epoch_symbols)
         
     else:
-        transition_probs = np.ones(len(epoch_symbols) - 1) * 0.01
+        transition_probs = np.ones(len(epoch_symbols)) * 0.01
     
     
     all_Te = [np.max([np.random.geometric(prob), MIN_Te]) for prob in transition_probs]
-    
-    all_Te.append(RESPONSE_Te)  # add a response epoch at the end
 
     epochs = []
     for Te, epoch_symbol in zip(all_Te, epoch_symbols):
@@ -359,8 +400,8 @@ def compute_emission_logp(s_t,
     task variable (x) for each t in 1,...,s_t.shape[0].
 
     Args:
-        s_t: [s_t.shape[0] x 2] matrix of observed inputs (Te can be 1)
-        y_t: [s_t.shape[0] x 2] matrix of observed outputs
+        s_t: [s_t.shape[0] x 3] matrix of observed inputs (Te can be 1)
+        y_t: [s_t.shape[0] x 3] matrix of observed outputs
         z_t: string representing the epoch
         x: dictionary containing the task variables
         sigma_s: noise standard deviation for input
@@ -387,14 +428,14 @@ def compute_emission_logp(s_t,
     return logp
 
 
-def get_c_z_transition_matrix(task_dict, p_stay=0.9):
+def get_c_z_transition_matrix(task_dict, p_stay=0.99):
     """
     Generate the transition matrix for the task epochs. Each state is a 
     c, z tuple.
 
     Args:
-        task_dict: a dictionary where the keys are task types (e.g. 'PRO')
-        and the corresponding values are sequences of epochs (e.g. 'F->S_P->R')
+        task_dict: a dictionary where the keys are task types (e.g. 'PRO_D')
+        and the corresponding values are sequences of epochs (e.g. 'F->S_P->R_P')
         p_stay: the probability of staying in the same epoch
 
     Returns:
@@ -409,12 +450,13 @@ def get_c_z_transition_matrix(task_dict, p_stay=0.9):
         epochs = task_dict[task_type].split('->')
         for epoch_type in epochs:
             cz_pairs.append((task_type, epoch_type))
+        cz_pairs.append((task_type, '<EOT>'))
 
     transition_matrix = np.eye((len(cz_pairs))) * p_stay
 
     for i, cz_pair in enumerate(cz_pairs):
         epoch_type = cz_pair[1]
-        if epoch_type != 'R':
+        if epoch_type != '<EOT>':
             transition_matrix[i, i+1] = 1 - p_stay
         else:
             transition_matrix[i, i] = 1
