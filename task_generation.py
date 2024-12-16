@@ -450,13 +450,14 @@ def get_c_z_transition_matrix(task_dict, p_stay=0.99):
         epochs = task_dict[task_type].split('->')
         for epoch_type in epochs:
             cz_pairs.append((task_type, epoch_type))
-        cz_pairs.append((task_type, '<EOT>'))
+        # cz_pairs.append((task_type, '<EOT>'))
 
     transition_matrix = np.eye((len(cz_pairs))) * p_stay
 
     for i, cz_pair in enumerate(cz_pairs):
         epoch_type = cz_pair[1]
-        if epoch_type != '<EOT>':
+        # if epoch_type != '<EOT>':
+        if 'R_' not in epoch_type:
             transition_matrix[i, i+1] = 1 - p_stay
         else:
             transition_matrix[i, i] = 1
