@@ -465,3 +465,18 @@ def get_c_z_transition_matrix(task_dict, p_stay=0.99):
     cz_to_ind_hash = {c_z_pair: i for i, c_z_pair in enumerate(cz_pairs)}
     
     return transition_matrix, cz_pairs, cz_to_ind_hash
+
+
+def get_z_transition_matrix_per_task(task_dict, p_stay=0.99):
+    task_list = list(task_dict.keys())
+    z_list = ['F', 'S_P', 'S_A', 'S_B', 'S_S', 'D', 'R_P', 'R_A', 'R_M']
+    transition_matrix = np.zeros((len(task_list), len(z_list), len(z_list)))
+    for itask, task_type in enumerate(task_list):
+        transition_matrix[itask] = np.eye(len(z_list))
+        epochs = task_dict[task_type].split('->')
+        for iepoch, epoch_type in enumerate(epochs[:-1]):
+            iz = z_list.index(epoch_type)
+            iz_nxt = z_list.index(epochs[iepoch+1])
+            transition_matrix[itask][iz, iz] = p_stay
+            transition_matrix[itask][iz, iz_nxt] = 1 - p_stay
+    return transition_matrix, task_list, z_list
