@@ -381,7 +381,7 @@ def multivariate_log_likelihood(obs, mean, sigma):
     if mean.ndim == 1:
         mean = mean.reshape(1, -1)
 
-    assert obs.shape == mean.shape
+    # assert obs.shape == mean.shape
 
     k = obs.shape[1]
 

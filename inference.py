@@ -27,32 +27,43 @@ def viterbi(p0_z, transition_matrix, log_likes):
 def forward_backward(p0_z, transition_matrix, log_likes):
     nc, nz, _ = transition_matrix.shape
     nx, _, nT = log_likes.shape
-    alphas = np.zeros((nc, nx, nz, nT))
-    alphas[..., 0] = np.log(p0_z) + log_likes[..., 0]
+    alpha = np.zeros((nc, nx, nz, nT))
+    alpha[..., 0] = np.log(p0_z) + log_likes[..., 0]
     for it in range(nT - 1):
-        m = np.max(alphas[..., it], axis=-1, keepdims=True)
+        m = np.max(alpha[..., it], axis=-1, keepdims=True)
         with np.errstate(divide='ignore'):
-            alphas[..., it + 1] = np.log(np.einsum('cxi,cij->cxj', np.exp(alphas[..., it] - m),
+            alpha[..., it + 1] = np.log(np.einsum('cxi,cij->cxj', np.exp(alpha[..., it] - m),
                                                    transition_matrix)) + m + log_likes[..., it + 1]
-    normalizer = logsumexp(alphas[..., -1], axis=-1)
-    betas = np.zeros((nc, nx, nz, nT))
-    betas[..., nT - 1] = 0
+    beta = np.zeros((nc, nx, nz, nT))
+    beta[..., nT - 1] = 0
     for it in range(nT - 2, -1, -1):
-        tmp = log_likes[..., it + 1] + betas[..., it + 1]
+        tmp = log_likes[..., it + 1] + beta[..., it + 1]
         m = np.max(tmp, axis=-1, keepdims=True)
         with np.errstate(divide='ignore'):
-            betas[..., it] = np.log(np.einsum('cij,cxj->cxi', transition_matrix,
+            beta[..., it] = np.log(np.einsum('cij,cxj->cxi', transition_matrix,
                                               np.exp(tmp - m))) + m
-    expected_states = alphas + betas
-    expected_states -= logsumexp(expected_states, axis=-2, keepdims=True)
-    expected_states = np.exp(expected_states)
-    return expected_states, normalizer
+    prior_cx = np.ones((nc, nx)) / (nc * nx)
+    # logp(w_{1:T}, c, x): shape (nc, nx)
+    logp_cx = logsumexp(alpha[..., -1], axis=-1) + np.log(prior_cx)
+    # logp(w_{1:T}): shape None
+    logp_obsv = logsumexp(logp_cx)
+    # p(c, x | w_{1:T})
+    p_cx = np.exp(logp_cx - logp_obsv)
+    # p(z_t=i, c, x | w_{1:T}): shape (nc, nx, nz, nT)
+    gamma = alpha + beta + np.log(prior_cx[:, :, None, None]) - logp_obsv
+    gamma = np.exp(gamma)
+    # p(z_t=i, z_{t+1}=j, c, x | w_{1:T}): shape (nc, nx, nz, nz, nT-1)
+    xi = alpha[:, :, :, None, :-1] + beta[:, :, None, :, 1:] + log_likes[:, None, :, 1:]
+    xi += np.log(transition_matrix)[:, None, :, :, None]
+    xi += np.log(prior_cx[:, :, None, None, None]) - logp_obsv
+    xi = np.exp(xi)
+    return gamma, xi, p_cx
 
 
 if __name__ == '__main__':
     tasks = list(task_dict.keys())
     x_set = [0, 1]
-    sigma = 0.1
+    sigma = 0.01
     gdth_task = np.random.choice(tasks)
     gdth_x = np.random.choice(x_set)
     sy, boundaries = compose_trial(task_dict[gdth_task], {'theta_task': gdth_x}, sigma, sigma)
@@ -85,12 +96,18 @@ if __name__ == '__main__':
     print(x_)
     print(ibds[1:])
     # ################### forward backward ##############################
-    expected_states, normalizer = forward_backward(p0_z, transition_matrix, log_likes)
-    ind_ = np.unravel_index(np.argmax(normalizer), normalizer.shape)
+    gamma, xi, p_cx = forward_backward(p0_z, transition_matrix, log_likes)
+    ind_ = np.unravel_index(np.argmax(p_cx), p_cx.shape)
     c_ = tasks[ind_[0]]
     x_ = x_set[ind_[1]]
-    z_ = np.argmax(expected_states[ind_[0], ind_[1], :, :], axis=0)
+    z_ = np.argmax(gamma[ind_[0], ind_[1], :, :], axis=0)
     ibds = [0] + list(np.argwhere(np.diff(z_)).flatten() + 1)
     print(c_, [z_list[z_[it]] for it in ibds])
     print(x_)
     print(ibds[1:])
+
+    fig, axes = plt.subplots(6, 1, figsize=(5, 6))
+    for i in range(3):
+        axes[i].plot(s_arr[:, i])
+        axes[i + 3].plot(y_arr[:, i])
+    fig.show()
