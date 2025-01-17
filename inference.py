@@ -57,7 +57,7 @@ def forward_backward(p0_z, transition_matrix, log_likes):
     xi += np.log(transition_matrix)[:, None, :, :, None]
     xi += np.log(prior_cx[:, :, None, None, None]) - logp_obsv
     xi = np.exp(xi)
-    return gamma, xi, p_cx
+    return gamma, xi, p_cx, logp_obsv
 
 
 if __name__ == '__main__':
@@ -96,7 +96,7 @@ if __name__ == '__main__':
     print(x_)
     print(ibds[1:])
     # ################### forward backward ##############################
-    gamma, xi, p_cx = forward_backward(p0_z, transition_matrix, log_likes)
+    gamma, xi, p_cx, _ = forward_backward(p0_z, transition_matrix, log_likes)
     ind_ = np.unravel_index(np.argmax(p_cx), p_cx.shape)
     c_ = tasks[ind_[0]]
     x_ = x_set[ind_[1]]
@@ -106,8 +106,8 @@ if __name__ == '__main__':
     print(x_)
     print(ibds[1:])
 
-    fig, axes = plt.subplots(6, 1, figsize=(5, 6))
-    for i in range(3):
-        axes[i].plot(s_arr[:, i])
-        axes[i + 3].plot(y_arr[:, i])
-    fig.show()
+    # fig, axes = plt.subplots(6, 1, figsize=(5, 6))
+    # for i in range(3):
+    #     axes[i].plot(s_arr[:, i])
+    #     axes[i + 3].plot(y_arr[:, i])
+    # fig.show()
