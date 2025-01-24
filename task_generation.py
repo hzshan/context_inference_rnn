@@ -9,26 +9,18 @@ sig_y: target output noise standard deviation
 
 x: dictionary containing the task variables
 
-Tasks
-PRO_D: "DelayPro": respond to the stimulus once fixation is off, F->S_P->R_P
-PRO_M: "MemoryPro" respond to the stimulus after a memory period, F->S_P->D->R_M
-PRO_R: "ResponsePro" respond to the stimulus ASAP, F->R_P
-'ANTI_D': "DelayAnti": respond to the opposite once fixation is off, F->S_A->R_A
-'ANTI_M': "MemoryAnti": respond to the opposite after memory period, F->S_A->D->R_M
-'ANTI_R': "ResponseAnti": respond to the opposite ASAP, F->R_A
-ORDER: respond to the stimulus coming on first, F->S_P->S_B->R_M
-DM: respond to the stronger stimulus, F->S_S->R_M
+# for a dict of epoch types, search for `epoch_dict` (it's defined mid-file)
 """
 
 task_dict = {
-    'PRO_D': 'F->S_P->R_P',
-    'PRO_M': 'F->S_P->D->R_M',
-    'PRO_R': 'F->R_P',
-    'ANTI_D': 'F->S_A->R_A',
-    'ANTI_M': 'F->S_A->D->R_M',
-    'ANTI_R': 'F->R_A',
-    'ORDER': 'F->S_P->S_B->R_M',
-    'DM': 'F->S_S->R_M'
+    'PRO_D': 'F/D->S->R_P', # "DelayPro": respond to the stimulus once fixation is off
+    'PRO_M': 'F/D->S->F/D->R_M_P', # "MemoryPro" respond to the stimulus after a memory period
+    'PRO_R': 'F/D->R_P', # "ResponsePro" respond to the stimulus ASAP
+    'ANTI_D': 'F/D->S->R_A', # "DelayAnti": respond to the opposite once fixation is off
+    'ANTI_M': 'F/D->S->F/D->R_M_A', # "MemoryAnti": respond to the opposite after memory period
+    'ANTI_R': 'F/D->R_A', # "ResponseAnti": respond to the opposite ASAP
+    'ORDER': 'F/D->S->S_B->R_M_P', # respond to the stimulus coming on first
+    'DM': 'F/D->S_S->R_M_P' # respond to the stronger stimulus
 }
 
 MIN_Te = 50  # minimum number of time steps in an epoch
@@ -142,7 +134,7 @@ def make_target_output(response: int, fixation: int, Te: int, sig_y: float):
 
 def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
     """
-    Generates a delay epoch or fixation epoch (D or F).
+    Generates a fixation/delay epoch (F/D).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
@@ -156,9 +148,9 @@ def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
                                   sig_y=sig_y)}
 
 
-def make_response_from_memory_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_response_from_memory_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
     """
-    Generates a response epoch (R_M).
+    Generates a response-from-memory pro epoch (R_M_P).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
@@ -167,6 +159,22 @@ def make_response_from_memory_epoch(x: dict, Te: int, sig_s: float, sig_y: float
                           Te=Te,
                           sig_s=sig_s),
             'y':make_target_output(response=x['theta_task'],  #respond to the task variable
+                                  fixation=0,
+                                  Te=Te,
+                                  sig_y=sig_y)}
+
+
+def make_response_from_memory_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+    """
+    Generates a response-from-memory anti epoch (R_M_A).
+    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    """
+
+    return {'s':make_input(stim=-1, # no stimulus presentation
+                          fixation=0,
+                          Te=Te,
+                          sig_s=sig_s),
+            'y':make_target_output(response=(x['theta_task'] + 1) % 2,  #respond to the anti task variable
                                   fixation=0,
                                   Te=Te,
                                   sig_y=sig_y)}
@@ -190,23 +198,23 @@ def make_response_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
 
 def make_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
     """
-    Generates a response epoch that responds to the presented stimulus. (R_A).
+    Generates a response epoch that responds to the anti stimulus. (R_A).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=(x['theta_task'] + 1) % 2, # no stimulus presentation
+    return {'s':make_input(stim=x['theta_task'],
                           fixation=0,
                           Te=Te,
                           sig_s=sig_s),
-            'y':make_target_output(response=x['theta_task'],  #respond to the task variable
+            'y':make_target_output(response=(x['theta_task'] + 1) % 2,  #respond to the anti task variable
                                   fixation=0,
                                   Te=Te,
                                   sig_y=sig_y)}
 
 
-def make_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
     """
-    Generates a pro-stimulus epoch (S_P).
+    Generates a stimulus epoch (S).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
@@ -219,19 +227,6 @@ def make_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
                                   fixation=1,
                                   Te=Te,
                                   sig_y=sig_y)}
-
-
-def make_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
-    """
-    Generates a anti-stimulus epoch (S_A).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
-    """
-    x_anti = x.copy()
-    x_anti['theta_task'] = (x['theta_task'] + 1) % 2
-    return make_pro_epoch(x_anti,
-                          Te,
-                          sig_s=sig_s,
-                          sig_y=sig_y)
 
 
 def make_superimposed_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
@@ -265,6 +260,18 @@ def make_both_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
                                   sig_y=sig_y)}
 
 
+epoch_dict = {
+    'F/D': make_delay_or_fixation_epoch,
+    'S': make_stim_epoch,
+    'S_B': make_both_epoch,
+    'S_S': make_superimposed_epoch,
+    'R_M_P': make_response_from_memory_pro_epoch,
+    'R_M_A': make_response_from_memory_anti_epoch,
+    'R_P': make_response_pro_epoch,
+    'R_A': make_response_anti_epoch
+}
+
+
 def parse_z_t(epoch_symbol: str, x: dict, sig_s: float, sig_y: float, Te: int):
     """
 
@@ -278,35 +285,9 @@ def parse_z_t(epoch_symbol: str, x: dict, sig_s: float, sig_y: float, Te: int):
     Returns:
         epoch: a dictionary containing the input (s) and target output (y) of the epoch
     """
-    if epoch_symbol == 'F':
-        return make_delay_or_fixation_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
 
-    elif epoch_symbol == 'S_P':
-        return make_pro_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-
-    elif epoch_symbol == 'S_A':
-        return make_anti_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-
-    elif epoch_symbol == 'S_B':
-        return make_both_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-
-    elif epoch_symbol == 'S_S':
-        return make_superimposed_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-
-    elif epoch_symbol == 'D':
-        return make_delay_or_fixation_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-
-    elif epoch_symbol == 'R_M':
-        return make_response_from_memory_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-    
-    elif epoch_symbol == 'R_P':
-        return make_response_pro_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-    
-    elif epoch_symbol == 'R_A':
-        return make_response_anti_epoch(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
-    
-    else:
-        raise ValueError(f'Invalid epoch symbol: {epoch_symbol}')
+    fn_to_call = epoch_dict[epoch_symbol]
+    return fn_to_call(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
 
 
 def compose_trial(seq_of_epochs: str,
@@ -469,7 +450,7 @@ def get_c_z_transition_matrix(task_dict, p_stay=0.99):
 
 def get_z_transition_matrix_per_task(task_dict, p_stay=0.99):
     task_list = list(task_dict.keys())
-    z_list = ['F', 'S_P', 'S_A', 'S_B', 'S_S', 'D', 'R_P', 'R_A', 'R_M']
+    z_list = list(epoch_dict.keys())
     transition_matrix = np.zeros((len(task_list), len(z_list), len(z_list)))
     for itask, task_type in enumerate(task_list):
         transition_matrix[itask] = np.eye(len(z_list))
