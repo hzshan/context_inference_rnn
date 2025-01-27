@@ -23,8 +23,6 @@ task_dict = {
     'DM': 'F/D->S_S->R_M_P' # respond to the stronger stimulus
 }
 
-MIN_Te = 50  # minimum number of time steps in an epoch
-
 def make_stim_input(stim: int, Te: int):
     """
     Produce a Te x 2 matrix of noisy inputs for a given stimulus.
@@ -294,7 +292,8 @@ def compose_trial(seq_of_epochs: str,
                   x: dict,
                   sig_s: float,
                   sig_y: float,
-                  transition_probs=None):
+                  p_stay,
+                  min_Te):
     """
     Generates a trial composed of a sequence of epochs.
 
@@ -302,9 +301,8 @@ def compose_trial(seq_of_epochs: str,
     x: the task variable (0 or 1)
     sig_s: noise standard deviation for input
     sig_y: noise standard deviation for target output
-    transition_probs (default to None): the i-th element is the probability of
-    transitioning to the i+1-th epoch. For the last epoch, it is the 
-    probability of ending the trial. If None, it is 0.01 for all epochs.
+    p_stay: probability of staying in the current epoch at each timestep
+    min_Te: minimum duration of each epoch
 
     Returns:
     trial: a dictionary containing the input (s) and target output (y) of the trial
@@ -312,14 +310,9 @@ def compose_trial(seq_of_epochs: str,
     """
     epoch_symbols = seq_of_epochs.split('->')
 
-    if transition_probs is not None:
-        assert len(transition_probs) == len(epoch_symbols)
-        
-    else:
-        transition_probs = np.ones(len(epoch_symbols)) * 0.01
+    transition_probs = np.ones(len(epoch_symbols)) * (1 - p_stay)
     
-    
-    all_Te = [np.max([np.random.geometric(prob), MIN_Te]) for prob in transition_probs]
+    all_Te = [np.max([np.random.geometric(prob), min_Te]) for prob in transition_probs]
 
     epochs = []
     for Te, epoch_symbol in zip(all_Te, epoch_symbols):
@@ -409,7 +402,7 @@ def compute_emission_logp(s_t,
     return logp
 
 
-def get_c_z_transition_matrix(task_dict, p_stay=0.99):
+def get_c_z_transition_matrix(task_dict, p_stay):
     """
     Generate the transition matrix for the task epochs. Each state is a 
     c, z tuple.
@@ -448,7 +441,7 @@ def get_c_z_transition_matrix(task_dict, p_stay=0.99):
     return transition_matrix, cz_pairs, cz_to_ind_hash
 
 
-def get_z_transition_matrix_per_task(task_dict, p_stay=0.99):
+def get_z_transition_matrix_per_task(task_dict, p_stay):
     task_list = list(task_dict.keys())
     z_list = list(epoch_dict.keys())
     transition_matrix = np.zeros((len(task_list), len(z_list), len(z_list)))
