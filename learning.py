@@ -72,3 +72,27 @@ def offline_learning(init_transition_matrix,
         w_table = w_table_numer / (w_table_denom[..., None] + eps)
 
     return transition_matrix, w_table, logp_obsv_arr, gammas
+
+
+def get_log_likelihood_for_trial(obs, w_table, transition_matrix, p0_z, sigma):
+
+    nx, nz, _ = w_table.shape
+    assert transition_matrix.shape[1:] == (nz, nz)
+    assert p0_z.shape == (nz,)
+    assert sigma > 0
+
+    x_set = np.arange(nx)
+    nT = len(obs)
+    log_likes = np.zeros((nx, nz, nT))
+    for ix, _ in enumerate(x_set):
+        for iz in range(nz):
+            log_likes[ix, iz, :] = \
+                inference.multivariate_log_likelihood(
+                    obs=obs, mean=w_table[ix, iz][None, :],
+                    sigma=sigma)
+
+    gamma, xi, p_cx, logp_obsv = inference.forward_backward(
+        p0_z, transition_matrix, log_likes)
+
+    # nc, nx, nz, nT; # nc, nx, nz, nz, nT-1; # nc, nx;
+    return logp_obsv
