@@ -24,7 +24,7 @@ def viterbi(p0_z, transition_matrix, log_likes):
     return ind_, z_
 
 
-def forward_backward(p0_z, transition_matrix, log_likes):
+def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None):
     nc, nz, _ = transition_matrix.shape
     nx, _, nT = log_likes.shape
     alpha = np.zeros((nc, nx, nz, nT))
@@ -42,7 +42,7 @@ def forward_backward(p0_z, transition_matrix, log_likes):
         with np.errstate(divide='ignore'):
             beta[..., it] = np.log(np.einsum('cij,cxj->cxi', transition_matrix,
                                               np.exp(tmp - m))) + m
-    prior_cx = np.ones((nc, nx)) / (nc * nx)
+    prior_cx = np.ones((nc, nx)) / (nc * nx) if prior_cx is None else prior_cx
     # logp(w_{1:T}, c, x): shape (nc, nx)
     logp_cx = logsumexp(alpha[..., -1], axis=-1) + np.log(prior_cx)
     # logp(w_{1:T}): shape None
@@ -78,7 +78,7 @@ if __name__ == '__main__':
     transition_matrix += log_eps
     transition_matrix /= transition_matrix.sum(axis=-1, keepdims=True)
     p0_z = np.zeros(len(z_list))
-    p0_z[z_list.index('F')] = 1
+    p0_z[z_list.index('F/D')] = 1
     p0_z += log_eps
     p0_z /= p0_z.sum()
     nT = len(s_arr)
@@ -106,8 +106,8 @@ if __name__ == '__main__':
     print(x_)
     print(ibds[1:])
 
-    # fig, axes = plt.subplots(6, 1, figsize=(5, 6))
-    # for i in range(3):
-    #     axes[i].plot(s_arr[:, i])
-    #     axes[i + 3].plot(y_arr[:, i])
-    # fig.show()
+    fig, axes = plt.subplots(6, 1, figsize=(5, 6))
+    for i in range(3):
+        axes[i].plot(s_arr[:, i])
+        axes[i + 3].plot(y_arr[:, i])
+    fig.show()
