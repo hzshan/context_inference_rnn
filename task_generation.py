@@ -510,4 +510,6 @@ def get_ground_truth(task_list, epoch_list, p_stay, nx):
 
     true_p0_z = np.zeros((nz))
     true_p0_z[np.where(np.array(epoch_list) == 'F/D')[0][0]] = 1
+    true_p0_z += 1e-10
+    true_p0_z /= np.sum(true_p0_z)
     return true_M, true_W, true_p0_z
