@@ -451,6 +451,63 @@ def get_z_transition_matrix_per_task(task_dict, p_stay):
         for iepoch, epoch_type in enumerate(epochs[:-1]):
             iz = z_list.index(epoch_type)
             iz_nxt = z_list.index(epochs[iepoch+1])
+            
             transition_matrix[itask][iz, iz] = p_stay
             transition_matrix[itask][iz, iz_nxt] = 1 - p_stay
     return transition_matrix, task_list, z_list
+
+
+def generate_trials(task_list: list,
+                    n_trials: int,
+                    nx: int,
+                    sigma: float,
+                    p_stay: float,
+                    min_Te: int):
+    
+    #TODO: add options to change ordering of trials
+
+    nc = len(task_list)
+    epoch_list = []
+    for task in task_list:
+        epoch_list += task_dict[task].split('->')
+    epoch_list = list(set(epoch_list))
+
+    trials = []
+    for itrial in range(n_trials):
+        c = np.mod(itrial, nc)
+        x = np.mod(itrial // nc, nx)
+        sy, _ = compose_trial(
+            task_dict[task_list[c]],
+            {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te)
+        trials.append((c, x, sy))
+
+    trials = np.array(trials)
+
+    return trials, epoch_list
+
+
+def get_ground_truth(task_list, epoch_list, p_stay, nx):
+
+    true_M = np.zeros((len(task_list), len(epoch_list), len(epoch_list)))
+    for itask, task_type in enumerate(task_list):
+        true_M[itask] = np.eye(len(epoch_list))
+        epochs = task_dict[task_type].split('->')
+        for iepoch, epoch_type in enumerate(epochs[:-1]):
+            iz = epoch_list.index(epoch_type)
+            iz_nxt = epoch_list.index(epochs[iepoch+1])
+            true_M[itask][iz, iz] = p_stay
+            true_M[itask][iz, iz_nxt] = 1 - p_stay
+    
+    true_M += 1e-10
+    true_M /= np.sum(true_M, axis=-1, keepdims=True)
+    
+    nz = len(epoch_list)
+    true_W = np.zeros((nx, nz, 6))
+    for x in range(nx):
+        for z in range(nz):
+            true_sy_dict = parse_z_t(epoch_list[z], {'theta_task':x}, 0, 0, 1)
+            true_W[x, z, :] = np.hstack([true_sy_dict['s'], true_sy_dict['y']])
+
+    true_p0_z = np.zeros((nz))
+    true_p0_z[np.where(np.array(epoch_list) == 'F/D')[0][0]] = 1
+    return true_M, true_W, true_p0_z
