@@ -1,85 +1,210 @@
-import tqdm
 import numpy as np
 import inference
 
-def offline_learning(init_transition_matrix,
-                     init_w_table,
-                     p0_z,
+# Terminology: 
+# LL: log likelihood of each trial
+# total_LL: sum of LLs across trials
+# LLpT: log likelihood per trial, total_LL / n_trials
+
+def offline_learning(init_M,
+                     init_W,
+                     init_p0_z,
                      trials,
-                     know_c=False,
                      max_iter=100,
                      tol=1e-5,
                      eps=1e-10,
                      sigma=0.01):
 
-    nc, nz, _ = init_transition_matrix.shape
-    nx = init_w_table.shape[0]
+    """
+    Args:
+        init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        init_W: initial weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        init_p0_z: initial distribution of z p(z_1=i): shape (nz,)
+        trials: list of trials with each trial being a tuple (c, x, sy)
+        max_iter: maximum number of iterations
+        tol: tolerance for convergence
+        eps: small constant for numerical stability
+        sigma: std of observation noise
+    
+    Returns:
+        learned_M: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        learned_W: learned weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        logp_obsv_arr: log likelihood of all trials over time
+        gamma_across_trials: list of gamma for each trial
+    """
 
-    w_table = init_w_table.copy()
-    transition_matrix = init_transition_matrix.copy()
+    nc, nz, _ = init_M.shape
+    nx = init_W.shape[0]
+    n_trials = len(trials)
 
-    logp_obsv_arr = []
+    learned_W = init_W.copy()  # nx, nz, d
+    learned_M = init_M.copy()  # nc, nz, nz
+    learned_p0_z = init_p0_z.copy()  # nz
 
-    x_set = np.arange(nx)
+    LLpT_over_time = []
 
-
-    for irun in tqdm.trange(max_iter):
-        cur_logp_obsv = 0
+    for irun in range(max_iter):
+        curr_total_LL = 0
         tmtrx = np.zeros((nc, nz, nz))
         w_table_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
         w_table_denom = np.zeros((nx, nz))
-        gammas = []
+        gamma_across_trials = []
 
-        # subset_trials = trials[np.random.choice(len(trials), 300)]
-
-        for itrial in range(len(trials)):
-            c, _, sy = trials[itrial]
+        for itrial in range(n_trials):
+            _, _, sy = trials[itrial]
             w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
-            nT = len(w_arr)
-            log_likes = np.zeros((nx, nz, nT))
-            for ix, x in enumerate(x_set):
-                for iz in range(nz):
-                    log_likes[ix, iz, :] = \
-                        inference.multivariate_log_likelihood(
-                            obs=w_arr, mean=w_table[ix, iz][None, :],
-                            sigma=sigma)
 
-            gamma, xi, p_cx, logp_obsv = inference.forward_backward(
-                p0_z, transition_matrix, log_likes)
+            gamma, xi, p_cx, LL = get_stats_for_single_trial(
+                single_trial=trials[itrial],
+                W=learned_W,
+                M=learned_M,
+                p0_z=learned_p0_z,
+                prior_cx=None,  #TODO: add prior_cx
+                sigma=sigma)
             
-            gammas.append(gamma)
+            gamma_across_trials.append(gamma)
 
             # nc, nx, nz, nT; # nc, nx, nz, nz, nT-1; # nc, nx;
-            cur_logp_obsv += logp_obsv
+            curr_total_LL += LL
 
-            if know_c:
-                tmtrx[c] += xi.sum((1, -1))[c] / (p_cx.sum(-1)[c] + eps)
-            else:
-                tmtrx += xi.sum((1, -1))
+            learned_p0_z += gamma[..., 0].sum((0, 1))
+            tmtrx += xi.sum((1, -1))
             w_table_numer += gamma.sum(0) @ w_arr  # nx, nz, d
             w_table_denom += gamma.sum((0, -1))
 
-        ################# update ################
-
         # check convergence
-        logp_obsv_arr.append(cur_logp_obsv)
-        if len(logp_obsv_arr) > 2:
-            if np.abs(logp_obsv_arr[-1] - logp_obsv_arr[-2]) < tol:
-                print('converged')
+        LLpT_over_time.append(curr_total_LL / n_trials)
+        if len(LLpT_over_time) > 2:
+            if np.abs(LLpT_over_time[-1] - LLpT_over_time[-2]) < tol:
                 break
+        
+        # update parameters
+        learned_p0_z += eps
+        learned_p0_z = learned_p0_z / learned_p0_z.sum()
         tmtrx += eps
-        transition_matrix = tmtrx / tmtrx.sum(axis=-1, keepdims=True)
-        w_table = w_table_numer / (w_table_denom[..., None] + eps)
+        learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True)
+        learned_W = w_table_numer / (w_table_denom[..., None] + eps)
+    
+    # warn if not converged
+    if irun == max_iter - 1:
+        print('Warning: EM did not converge')
 
-    return transition_matrix, w_table, logp_obsv_arr, gammas
+    return learned_M, learned_W, learned_p0_z, LLpT_over_time, gamma_across_trials
 
 
-def get_log_likelihood_for_trial(obs, w_table, transition_matrix, p0_z, sigma):
+def online_learning(init_M,
+                    init_W,
+                    init_p0_z,
+                    trials,
+                    n_sweeps=1,
+                    eps=1e-10,
+                    sigma=0.01,
+                    lr=0.1):
+    """
+    Args:
+        init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        init_W: initial weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        init_p0_z: initial distribution of z p(z_1=i): shape (nz,)
+        trials: list of trials with each trial being a tuple (c, x, sy)
+        n_sweeps: number of sweeps (for true online learning, set to 1)
+        eps: small constant for numerical stability
+        sigma: std of observation noise
+        lr: learning rate
+    
+    Returns:
+        learned_M: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        learned_W: learned weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        LLpT_over_time: log likelihood of all trials over time
+        gamma_across_trials: list of gamma for each trial (using the final parameters)
+    """
 
-    nx, nz, _ = w_table.shape
-    assert transition_matrix.shape[1:] == (nz, nz)
+    nc, nz, _ = init_M.shape
+    nx = init_W.shape[0]
+
+    learned_W = init_W.copy()
+    learned_M = init_M.copy()
+    learned_p0_z = init_p0_z.copy()
+
+    LLpT_over_time = []
+
+    # initialize sufficient statistics
+    tmtrx = np.zeros((nc, nz, nz))
+    w_table_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
+    w_table_denom = np.zeros((nx, nz))
+
+    for i in range(n_sweeps):
+        
+        for itrial in range(len(trials)):
+            
+            # load trial
+            _, _, sy = trials[itrial]
+            w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
+
+            # get sufficient statistics for this trial
+            gamma, xi, _, _ = get_stats_for_single_trial(
+                single_trial=trials[itrial],
+                W=learned_W,
+                M=learned_M, 
+                p0_z=learned_p0_z,
+                prior_cx=None,  #TODO: add prior_cx
+                sigma=sigma)
+
+
+            # online update of sufficient statistics
+            w_table_numer = (gamma.sum(0) @ w_arr) * lr + w_table_numer * (1 - lr)  # nx, nz, d
+            w_table_denom = (gamma.sum((0, -1))) * lr + w_table_denom * (1 - lr)
+            tmtrx = xi.sum((1, -1)) * lr + tmtrx * (1 - lr)
+            tmtrx += eps
+
+            # online update of parameters
+            learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True)
+            learned_W = w_table_numer / (w_table_denom[..., None] + eps)
+            learned_p0_z = gamma[..., 0].sum((0, 1)) * lr + learned_p0_z * (1 - lr)
+            # learned_p0_z = learned_p0_z / learned_p0_z.sum()
+
+            if itrial % 10 == 0:
+                # evaluate the final parameters on all the trials
+                gamma_across_trials, curr_LLpT = get_stats_for_multiple_trials(
+                    trials, learned_W, learned_M, learned_p0_z, sigma)
+
+                LLpT_over_time.append(curr_LLpT)
+
+
+    return learned_M, learned_W, learned_p0_z, LLpT_over_time, gamma_across_trials
+
+
+def get_stats_for_single_trial(
+        single_trial: tuple,
+        W: np.ndarray,
+        M: np.ndarray,
+        p0_z: np.ndarray,
+        prior_cx: np.ndarray,
+        sigma: float):
+    """
+
+
+    Args:
+        single_trial: tuple (c, x, sy)
+        W: p(w_t|x, z_t=i): shape (nx, nz, d)
+        M: p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        p0_z: p(z_1=i): shape (nz,)
+        prior_cx: p(c, x): shape (nc, nx)
+        sigma: std of observation noise
+    
+    Returns:
+        gamma: p(c, x, z_t=i| w_{1:T}): shape (nc, nx, nz, nT)
+        xi: p(c, x, z_t=i, z_{t+1}=j| w_{1:T}): shape (nc, nx, nz, nz, nT-1)
+        p_cx: p(c, x | w_{1:T}): shape (nc, nx)
+        LL: log p(w_{1:T}): shape None
+    """
+
+    nx, nz, _ = W.shape
+    assert M.shape[1:] == (nz, nz)
     assert p0_z.shape == (nz,)
     assert sigma > 0
+
+    _, _, sy = single_trial
+    obs = np.concatenate((sy['s'], sy['y']), axis=-1)
 
     x_set = np.arange(nx)
     nT = len(obs)
@@ -88,11 +213,46 @@ def get_log_likelihood_for_trial(obs, w_table, transition_matrix, p0_z, sigma):
         for iz in range(nz):
             log_likes[ix, iz, :] = \
                 inference.multivariate_log_likelihood(
-                    obs=obs, mean=w_table[ix, iz][None, :],
+                    obs=obs, mean=W[ix, iz][None, :],
                     sigma=sigma)
 
-    gamma, xi, p_cx, logp_obsv = inference.forward_backward(
-        p0_z, transition_matrix, log_likes)
+    gamma, xi, p_cx, LL = inference.forward_backward(
+        p0_z, M, log_likes, prior_cx=prior_cx)
 
-    # nc, nx, nz, nT; # nc, nx, nz, nz, nT-1; # nc, nx;
-    return logp_obsv
+    return gamma, xi, p_cx, LL
+
+
+def get_stats_for_multiple_trials(
+        trials,
+        W,
+        M,
+        p0_z,
+        sigma):
+    """
+    For the given parameters, compute the LLpT.
+
+    
+    Args:
+        trials: list of trials with each trial being a tuple (c, x, sy)
+        W: p(w_t|x, z_t=i): shape (nx, nz, d)
+        M: p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        p0_z: p(z_1=i): shape (nz,)
+        sigma: std of observation noise
+    
+    Returns:
+        gamma_across_trials: list of gamma for each trial
+        LLpT: log likelihood of a single trial, averaged over trials
+    """
+    total_LL = 0
+    gamma_across_trials = []
+    for itrial in range(len(trials)):
+
+        gamma, _, _, LL = get_stats_for_single_trial(
+            single_trial=trials[itrial],
+            W=W, M=M, p0_z=p0_z, prior_cx=None, sigma=sigma)  #TODO: add prior_cx   
+        total_LL += LL
+        gamma_across_trials.append(gamma)
+    
+    LLpT = total_LL / len(trials)
+    
+    return gamma_across_trials, LLpT
