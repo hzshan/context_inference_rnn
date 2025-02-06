@@ -5,6 +5,13 @@ from scipy.special import logsumexp
 from task_generation import *
 
 
+def _log(x):
+    output = x.copy()
+    output[x == 0] = -np.inf
+    output[x != 0] = np.log(x[x != 0])
+    return output
+
+
 def viterbi(p0_z, transition_matrix, log_likes):
     nc, nz, _ = transition_matrix.shape
     nx, _, nT = log_likes.shape
@@ -12,10 +19,10 @@ def viterbi(p0_z, transition_matrix, log_likes):
     args = np.zeros((nc, nx, nz, nT), dtype=int)
     for it in range(nT - 2, -1, -1):
         vals = scores[..., it + 1] + log_likes[..., it + 1]
-        vals = np.log(transition_matrix[:, None, :, :]) + vals[:, :, None, :]
+        vals = _log(transition_matrix[:, None, :, :]) + vals[:, :, None, :]
         args[..., it + 1] = np.argmax(vals, axis=-1)
         scores[..., it] = np.max(vals, axis=-1)
-    scores_ = np.log(p0_z) + scores[..., 0] + log_likes[..., 0]
+    scores_ = _log(p0_z) + scores[..., 0] + log_likes[..., 0]
     ind_ = np.unravel_index(np.argmax(scores_, axis=None), scores_.shape)
     z_ = np.zeros(nT, dtype=int)
     z_[0] = ind_[2]
@@ -28,11 +35,11 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None):
     nc, nz, _ = transition_matrix.shape
     nx, _, nT = log_likes.shape
     alpha = np.zeros((nc, nx, nz, nT))
-    alpha[..., 0] = np.log(p0_z) + log_likes[..., 0]
+    alpha[..., 0] = _log(p0_z) + log_likes[..., 0]
     for it in range(nT - 1):
         m = np.max(alpha[..., it], axis=-1, keepdims=True)
         with np.errstate(divide='ignore'):
-            alpha[..., it + 1] = np.log(np.einsum('cxi,cij->cxj', np.exp(alpha[..., it] - m),
+            alpha[..., it + 1] = _log(np.einsum('cxi,cij->cxj', np.exp(alpha[..., it] - m),
                                                    transition_matrix)) + m + log_likes[..., it + 1]
     beta = np.zeros((nc, nx, nz, nT))
     beta[..., nT - 1] = 0
@@ -40,22 +47,22 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None):
         tmp = log_likes[..., it + 1] + beta[..., it + 1]
         m = np.max(tmp, axis=-1, keepdims=True)
         with np.errstate(divide='ignore'):
-            beta[..., it] = np.log(np.einsum('cij,cxj->cxi', transition_matrix,
+            beta[..., it] = _log(np.einsum('cij,cxj->cxi', transition_matrix,
                                               np.exp(tmp - m))) + m
     prior_cx = np.ones((nc, nx)) / (nc * nx) if prior_cx is None else prior_cx
     # logp(w_{1:T}, c, x): shape (nc, nx)
-    logp_cx = logsumexp(alpha[..., -1], axis=-1) + np.log(prior_cx)
+    logp_cx = logsumexp(alpha[..., -1], axis=-1) + _log(prior_cx)
     # logp(w_{1:T}): shape None
     logp_obsv = logsumexp(logp_cx)
     # p(c, x | w_{1:T})
     p_cx = np.exp(logp_cx - logp_obsv)
     # p(z_t=i, c, x | w_{1:T}): shape (nc, nx, nz, nT)
-    gamma = alpha + beta + np.log(prior_cx[:, :, None, None]) - logp_obsv
+    gamma = alpha + beta + _log(prior_cx[:, :, None, None]) - logp_obsv
     gamma = np.exp(gamma)
     # p(z_t=i, z_{t+1}=j, c, x | w_{1:T}): shape (nc, nx, nz, nz, nT-1)
     xi = alpha[:, :, :, None, :-1] + beta[:, :, None, :, 1:] + log_likes[:, None, :, 1:]
-    xi += np.log(transition_matrix)[:, None, :, :, None]
-    xi += np.log(prior_cx[:, :, None, None, None]) - logp_obsv
+    xi += _log(transition_matrix)[:, None, :, :, None]
+    xi += _log(prior_cx[:, :, None, None, None]) - logp_obsv
     xi = np.exp(xi)
     return gamma, xi, p_cx, logp_obsv
 
