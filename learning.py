@@ -99,7 +99,8 @@ def online_learning(init_M,
                     n_sweeps=1,
                     eps=1e-10,
                     sigma=0.01,
-                    lr=0.1):
+                    lr=0.1,
+                    iters_per_trial=10):
     """
     Args:
         init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
@@ -110,6 +111,7 @@ def online_learning(init_M,
         eps: small constant for numerical stability
         sigma: std of observation noise
         lr: learning rate
+        iters_per_trial: number of iterations per trial
     
     Returns:
         learned_M: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
@@ -137,23 +139,43 @@ def online_learning(init_M,
         for itrial in range(len(trials)):
             
             # load trial
-            _, _, sy = trials[itrial]
+            c, x, sy = trials[itrial]
             w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
 
-            # get sufficient statistics for this trial
-            gamma, xi, _, _ = get_stats_for_single_trial(
-                single_trial=trials[itrial],
-                W=learned_W,
-                M=learned_M, 
-                p0_z=learned_p0_z,
-                prior_cx=None,  #TODO: add prior_cx
-                sigma=sigma)
+            prior_cx = np.zeros((nc, nx))
+            prior_cx[c, x] = 1
+            prior_cx /= prior_cx.sum()
+
+            # i guess we could initialize them at random as well
+            learned_W_this_trial = init_W.copy()
+            learned_M_this_trial = init_M.copy()
+            learned_p0_z_this_trial = init_p0_z.copy()
+
+            for j in range(iters_per_trial):
+
+                # get sufficient statistics for this trial
+                gamma, xi, _, _ = get_stats_for_single_trial(
+                    single_trial=trials[itrial],
+                    W=learned_W_this_trial,
+                    M=learned_M_this_trial, 
+                    p0_z=learned_p0_z_this_trial,
+                    prior_cx=prior_cx,  #TODO: add prior_cx
+                    sigma=sigma)
+                
+                w_table_numer_this_trial = gamma.sum(0) @ w_arr  # nx, nz, d
+                w_table_denom_this_trial = gamma.sum((0, -1))
+                tmtrx_this_trial = xi.sum((1, -1)) + eps
+            
+                learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
+                learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
+                learned_p0_z_this_trial = gamma[..., 0].sum((0, 1))
+            # 
 
 
             # online update of sufficient statistics
-            w_table_numer = (gamma.sum(0) @ w_arr) * lr + w_table_numer * (1 - lr)  # nx, nz, d
-            w_table_denom = (gamma.sum((0, -1))) * lr + w_table_denom * (1 - lr)
-            tmtrx = xi.sum((1, -1)) * lr + tmtrx * (1 - lr)
+            w_table_numer = w_table_numer_this_trial * lr + w_table_numer * (1 - lr)  # nx, nz, d
+            w_table_denom = w_table_denom_this_trial * lr + w_table_denom * (1 - lr)
+            tmtrx = tmtrx_this_trial * lr + tmtrx * (1 - lr)
             tmtrx += eps
 
             # online update of parameters
@@ -199,16 +221,23 @@ def get_stats_for_single_trial(
     """
 
     nx, nz, _ = W.shape
+    nc = M.shape[0]
     assert M.shape[1:] == (nz, nz)
     assert p0_z.shape == (nz,)
     assert sigma > 0
-
-    _, _, sy = single_trial
+    
+    c, x, sy = single_trial
     obs = np.concatenate((sy['s'], sy['y']), axis=-1)
+    
+    #TODO: REMOVE THIS
+    prior_cx = np.zeros((nc, nx))
+    prior_cx[c, x] = 1
+    prior_cx /= prior_cx.sum()
 
     x_set = np.arange(nx)
     nT = len(obs)
     log_likes = np.zeros((nx, nz, nT))
+
     for ix, _ in enumerate(x_set):
         for iz in range(nz):
             log_likes[ix, iz, :] = \
