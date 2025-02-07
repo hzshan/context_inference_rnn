@@ -9,7 +9,6 @@ import inference
 
 def _update(orig, new, lr):
     return orig * (1 - lr) + new * lr
-    # return orig + new
 
 def offline_learning(init_M,
                      init_W,
@@ -65,7 +64,7 @@ def offline_learning(init_M,
                 W=learned_W,
                 M=learned_M,
                 p0_z=learned_p0_z,
-                x_oracle=x_oracle,  #TODO: add prior_cx
+                x_oracle=x_oracle,
                 sigma=sigma)
             
             gamma_across_trials.append(gamma)
@@ -185,9 +184,12 @@ def online_learning(init_M,
             tmtrx = tmtrx_this_trial.copy()
 
             # online update of parameters
-            learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
-            learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
-            learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
+            # learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
+            # learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
+            # learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
+            learned_M = _update(learned_M, tmtrx / tmtrx.sum(axis=-1, keepdims=True), lr)
+            learned_W = _update(learned_W, w_table_numer / (w_table_denom[..., None] + eps), lr)
+            learned_p0_z = _update(learned_p0_z, learned_p0_z_this_trial, lr)
 
             if itrial % 10 == 0:
                 # evaluate the final parameters on all the trials
