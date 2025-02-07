@@ -9,6 +9,7 @@ import inference
 
 def _update(orig, new, lr):
     return orig * (1 - lr) + new * lr
+    # return orig + new
 
 def offline_learning(init_M,
                      init_W,
@@ -17,7 +18,8 @@ def offline_learning(init_M,
                      max_iter=100,
                      tol=1e-5,
                      eps=1e-10,
-                     sigma=0.01):
+                     sigma=0.01,
+                     x_oracle=False):
 
     """
     Args:
@@ -63,7 +65,7 @@ def offline_learning(init_M,
                 W=learned_W,
                 M=learned_M,
                 p0_z=learned_p0_z,
-                prior_cx=None,  #TODO: add prior_cx
+                x_oracle=x_oracle,  #TODO: add prior_cx
                 sigma=sigma)
             
             gamma_across_trials.append(gamma)
@@ -104,7 +106,8 @@ def online_learning(init_M,
                     eps=1e-10,
                     sigma=0.01,
                     lr=0.1,
-                    iters_per_trial=10):
+                    iters_per_trial=10,
+                    x_oracle=False):
     """
     Args:
         init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
@@ -146,10 +149,6 @@ def online_learning(init_M,
             c, x, sy = trials[itrial]
             w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
 
-            prior_cx = np.zeros((nc, nx))
-            prior_cx[c, x] = 1
-            prior_cx /= prior_cx.sum()
-
             # i guess we could initialize them at random as well
             learned_W_this_trial = learned_W.copy()
             learned_M_this_trial = learned_M.copy()
@@ -159,7 +158,7 @@ def online_learning(init_M,
             w_table_denom_this_trial = w_table_denom.copy()
             tmtrx_this_trial = tmtrx.copy()
 
-            for j in range(iters_per_trial):
+            for iiter in range(iters_per_trial):
 
                 # get sufficient statistics for this trial
                 gamma, xi, _, _ = get_stats_for_single_trial(
@@ -167,7 +166,7 @@ def online_learning(init_M,
                     W=learned_W_this_trial,
                     M=learned_M_this_trial, 
                     p0_z=learned_p0_z_this_trial,
-                    prior_cx=prior_cx,  #TODO: add prior_cx
+                    x_oracle=x_oracle,
                     sigma=sigma)
                 
                 # sufficient stats at each iter is a combination of those from teh previous trial and those from the current iter
@@ -186,14 +185,14 @@ def online_learning(init_M,
             tmtrx = tmtrx_this_trial.copy()
 
             # online update of parameters
-            learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True)
-            learned_W = w_table_numer / (w_table_denom[..., None] + eps)
-            learned_p0_z = learned_p0_z_this_trial.copy()
+            learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
+            learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
+            learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
 
             if itrial % 10 == 0:
                 # evaluate the final parameters on all the trials
                 gamma_across_trials, curr_LLpT = get_stats_for_multiple_trials(
-                    trials, learned_W, learned_M, learned_p0_z, sigma)
+                    trials, learned_W, learned_M, learned_p0_z, sigma, x_oracle)
 
                 LLpT_over_time.append(curr_LLpT)
 
@@ -206,10 +205,9 @@ def get_stats_for_single_trial(
         W: np.ndarray,
         M: np.ndarray,
         p0_z: np.ndarray,
-        prior_cx: np.ndarray,
+        x_oracle: bool,
         sigma: float):
     """
-
 
     Args:
         single_trial: tuple (c, x, sy)
@@ -235,9 +233,12 @@ def get_stats_for_single_trial(
     c, x, sy = single_trial
     obs = np.concatenate((sy['s'], sy['y']), axis=-1)
     
-    #TODO: REMOVE THIS
     prior_cx = np.zeros((nc, nx))
-    prior_cx[c, x] = 1
+    if x_oracle:
+        prior_cx[c, x] = 1
+    else:
+        prior_cx[c] = 1
+
     prior_cx /= prior_cx.sum()
 
     x_set = np.arange(nx)
@@ -262,7 +263,8 @@ def get_stats_for_multiple_trials(
         W,
         M,
         p0_z,
-        sigma):
+        sigma,
+        x_oracle):
     """
     For the given parameters, compute the LLpT.
 
@@ -284,7 +286,7 @@ def get_stats_for_multiple_trials(
 
         gamma, _, _, LL = get_stats_for_single_trial(
             single_trial=trials[itrial],
-            W=W, M=M, p0_z=p0_z, prior_cx=None, sigma=sigma)  #TODO: add prior_cx   
+            W=W, M=M, p0_z=p0_z, x_oracle=x_oracle, sigma=sigma)
         total_LL += LL
         gamma_across_trials.append(gamma)
     
