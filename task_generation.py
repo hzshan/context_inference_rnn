@@ -462,7 +462,8 @@ def generate_trials(task_list: list,
                     nx: int,
                     sigma: float,
                     p_stay: float,
-                    min_Te: int):
+                    min_Te: int,
+                    sort_by_task=False):
     
     #TODO: add options to change ordering of trials
 
@@ -473,6 +474,7 @@ def generate_trials(task_list: list,
     epoch_list = list(set(epoch_list))
 
     trials = []
+    task_ids = []
     for itrial in range(n_trials):
         c = np.mod(itrial, nc)
         x = np.mod(itrial // nc, nx)
@@ -480,13 +482,18 @@ def generate_trials(task_list: list,
             task_dict[task_list[c]],
             {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te)
         trials.append((c, x, sy))
+        task_ids.append(c)
 
     trials = np.array(trials)
+
+    if sort_by_task:
+        sort_idx = np.argsort(task_ids)
+        trials = trials[sort_idx]
 
     return trials, epoch_list
 
 
-def get_ground_truth(task_list, epoch_list, p_stay, nx):
+def get_ground_truth(task_list, epoch_list, p_stay, nx, eps=1e-10):
 
     true_M = np.zeros((len(task_list), len(epoch_list), len(epoch_list)))
     for itask, task_type in enumerate(task_list):
@@ -498,7 +505,7 @@ def get_ground_truth(task_list, epoch_list, p_stay, nx):
             true_M[itask][iz, iz] = p_stay
             true_M[itask][iz, iz_nxt] = 1 - p_stay
     
-    true_M += 1e-10
+    true_M += eps
     true_M /= np.sum(true_M, axis=-1, keepdims=True)
     
     nz = len(epoch_list)
@@ -507,9 +514,9 @@ def get_ground_truth(task_list, epoch_list, p_stay, nx):
         for z in range(nz):
             true_sy_dict = parse_z_t(epoch_list[z], {'theta_task':x}, 0, 0, 1)
             true_W[x, z, :] = np.hstack([true_sy_dict['s'], true_sy_dict['y']])
-
+ 
     true_p0_z = np.zeros((nz))
     true_p0_z[np.where(np.array(epoch_list) == 'F/D')[0][0]] = 1
-    true_p0_z += 1e-10
+    true_p0_z += eps
     true_p0_z /= np.sum(true_p0_z)
     return true_M, true_W, true_p0_z
