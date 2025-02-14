@@ -258,20 +258,23 @@ def get_stats_for_multiple_trials(
     Returns:
         gamma_across_trials: list of gamma for each trial
         LLpT: log likelihood of a single trial, averaged over trials
+        LL_across_trials: list of log likelihood for each trial
     """
-    total_LL = 0
+
     gamma_across_trials = []
+    LL_across_trials = []
     for itrial in range(len(trials)):
 
         gamma, _, _, LL = get_stats_for_single_trial(
             single_trial=trials[itrial],
             W=W, M=M, p0_z=p0_z, x_oracle=x_oracle, sigma=sigma)
-        total_LL += LL
+        LL_across_trials.append(LL)
         gamma_across_trials.append(gamma)
-    
+
+    total_LL = np.sum(LL_across_trials)
     LLpT = total_LL / len(trials)
     
-    return gamma_across_trials, LLpT
+    return gamma_across_trials, LLpT, LL_across_trials
 
 
 def _online_learning_single_trial(
