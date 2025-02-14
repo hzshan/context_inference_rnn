@@ -10,6 +10,11 @@ import inference
 def _update(orig, new, lr):
     return orig * (1 - lr) + new * lr
 
+
+def _add_with_discount(orig, new, discount):
+    return orig * discount + new
+
+
 def offline_learning(init_M,
                      init_W,
                      init_p0_z,
@@ -105,6 +110,7 @@ def online_learning(init_M,
                     eps=1e-10,
                     sigma=0.01,
                     lr=0.1,
+                    suff_stats_discount=0.99,
                     iters_per_trial=10,
                     x_oracle=False):
     """
@@ -117,6 +123,7 @@ def online_learning(init_M,
         eps: small constant for numerical stability
         sigma: std of observation noise
         lr: learning rate
+        suff_stats_discount: discount factor for sufficient statistics
         iters_per_trial: number of iterations per trial
     
     Returns:
@@ -144,52 +151,22 @@ def online_learning(init_M,
         
         for itrial in range(len(trials)):
             
-            # load trial
-            c, x, sy = trials[itrial]
-            w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
-
-            # i guess we could initialize them at random as well
-            learned_W_this_trial = learned_W.copy()
-            learned_M_this_trial = learned_M.copy()
-            learned_p0_z_this_trial = learned_p0_z.copy()
-
-            w_table_numer_this_trial = w_table_numer.copy()
-            w_table_denom_this_trial = w_table_denom.copy()
-            tmtrx_this_trial = tmtrx.copy()
-
-            for iiter in range(iters_per_trial):
-
-                # get sufficient statistics for this trial
-                gamma, xi, _, _ = get_stats_for_single_trial(
-                    single_trial=trials[itrial],
-                    W=learned_W_this_trial,
-                    M=learned_M_this_trial, 
-                    p0_z=learned_p0_z_this_trial,
-                    x_oracle=x_oracle,
-                    sigma=sigma)
-                
-                # sufficient stats at each iter is a combination of those from teh previous trial and those from the current iter
-                w_table_numer_this_trial = _update(w_table_numer, gamma.sum(0) @ w_arr, lr)
-                w_table_denom_this_trial = _update(w_table_denom, gamma.sum((0, -1)), lr)
-                tmtrx_this_trial = _update(tmtrx, xi.sum((1, -1)), lr) + eps
-            
-                learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
-                learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
-                learned_p0_z_this_trial = _update(learned_p0_z, gamma[..., 0].sum((0, 1)), lr)
-
-
-            # log suff stats from the final iter as the suff stats for the next trial
-            w_table_numer = w_table_numer_this_trial.copy()
-            w_table_denom = w_table_denom_this_trial.copy()
-            tmtrx = tmtrx_this_trial.copy()
-
-            # online update of parameters
-            # learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
-            # learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
-            # learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
-            learned_M = _update(learned_M, tmtrx / tmtrx.sum(axis=-1, keepdims=True), lr)
-            learned_W = _update(learned_W, w_table_numer / (w_table_denom[..., None] + eps), lr)
-            learned_p0_z = _update(learned_p0_z, learned_p0_z_this_trial, lr)
+            (learned_M, learned_W,
+             learned_p0_z, w_table_numer,
+             w_table_denom, tmtrx) = _online_learning_single_trial(
+                curr_W=learned_W,
+                curr_M=learned_M,
+                curr_p0_z=learned_p0_z,
+                curr_w_table_numer=w_table_numer,
+                curr_w_table_denom=w_table_denom,
+                curr_tmtrx=tmtrx,
+                trial=trials[itrial],
+                lr=lr,
+                suff_stats_discount=suff_stats_discount,
+                iters_per_trial=iters_per_trial,
+                eps=eps,
+                sigma=sigma,
+                x_oracle=x_oracle)
 
             if itrial % 10 == 0:
                 # evaluate the final parameters on all the trials
@@ -295,3 +272,70 @@ def get_stats_for_multiple_trials(
     LLpT = total_LL / len(trials)
     
     return gamma_across_trials, LLpT
+
+
+def _online_learning_single_trial(
+    curr_W,
+    curr_M,
+    curr_p0_z,
+    curr_w_table_numer,
+    curr_w_table_denom,
+    curr_tmtrx,
+    trial,
+    lr,
+    suff_stats_discount,
+    iters_per_trial,
+    eps,
+    sigma,
+    x_oracle):
+
+    c, x, sy = trial
+    w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
+
+    learned_W_this_trial = curr_W.copy()
+    learned_M_this_trial = curr_M.copy()
+    learned_p0_z_this_trial = curr_p0_z.copy()
+
+    w_table_numer_this_trial = curr_w_table_numer.copy()
+    w_table_denom_this_trial = curr_w_table_denom.copy()
+    tmtrx_this_trial = curr_tmtrx.copy()
+
+    for iiter in range(iters_per_trial):
+
+        # get sufficient statistics for this trial
+        gamma, xi, _, _ = get_stats_for_single_trial(
+            single_trial=trial,
+            W=learned_W_this_trial,
+            M=learned_M_this_trial, 
+            p0_z=learned_p0_z_this_trial,
+            x_oracle=x_oracle,
+            sigma=sigma)
+        
+        # sufficient stats at each iter is a combination of those from teh previous trial and those from the current iter
+        w_table_numer_this_trial = _add_with_discount(
+            curr_w_table_numer,gamma.sum(0) @ w_arr, suff_stats_discount)
+        w_table_denom_this_trial = _add_with_discount(
+            curr_w_table_denom, gamma.sum((0, -1)), suff_stats_discount)
+        tmtrx_this_trial = _add_with_discount(
+            curr_tmtrx, xi.sum((1, -1)), suff_stats_discount) + eps
+
+     
+        learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
+        learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
+        learned_p0_z_this_trial = _update(curr_p0_z, gamma[..., 0].sum((0, 1)), lr)
+
+
+    # log suff stats from the final iter as the suff stats for the next trial
+    w_table_numer = w_table_numer_this_trial.copy()
+    w_table_denom = w_table_denom_this_trial.copy()
+    tmtrx = tmtrx_this_trial.copy()
+
+    # online update of parameters
+    # learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
+    # learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
+    # learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
+    learned_M = _update(curr_M, tmtrx / tmtrx.sum(axis=-1, keepdims=True), lr)
+    learned_W = _update(curr_W, w_table_numer / (w_table_denom[..., None] + eps), lr)
+    learned_p0_z = _update(curr_p0_z, learned_p0_z_this_trial, lr)
+
+    return learned_M, learned_W, learned_p0_z, w_table_numer, w_table_denom, tmtrx
