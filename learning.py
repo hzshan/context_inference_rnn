@@ -170,7 +170,7 @@ def online_learning(init_M,
 
             if itrial % 10 == 0:
                 # evaluate the final parameters on all the trials
-                gamma_across_trials, curr_LLpT = get_stats_for_multiple_trials(
+                gamma_across_trials, curr_LLpT, _ = get_stats_for_multiple_trials(
                     trials, learned_W, learned_M, learned_p0_z, sigma, x_oracle)
 
                 LLpT_over_time.append(curr_LLpT)
@@ -316,13 +316,12 @@ def _online_learning_single_trial(
         
         # sufficient stats at each iter is a combination of those from teh previous trial and those from the current iter
         w_table_numer_this_trial = _add_with_discount(
-            curr_w_table_numer,gamma.sum(0) @ w_arr, suff_stats_discount)
+            curr_w_table_numer, gamma.sum(0) @ w_arr, suff_stats_discount)
         w_table_denom_this_trial = _add_with_discount(
             curr_w_table_denom, gamma.sum((0, -1)), suff_stats_discount)
         tmtrx_this_trial = _add_with_discount(
             curr_tmtrx, xi.sum((1, -1)), suff_stats_discount) + eps
 
-     
         learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
         learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
         learned_p0_z_this_trial = _update(curr_p0_z, gamma[..., 0].sum((0, 1)), lr)
