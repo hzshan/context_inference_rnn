@@ -7,8 +7,13 @@ import inference
 # LLpT: log likelihood per trial, total_LL / n_trials
 
 
-def _update(orig, new, lr):
-    return orig * (1 - lr) + new * lr
+def _update(orig, new, lr, mask=None):
+    if mask is None:
+        return orig * (1 - lr) + new * lr
+    else:
+        output = orig.copy()
+        output[mask] = output[mask] * (1 - lr) + new[mask] * lr
+        return output
 
 
 def _add_with_discount(orig, new, discount):
@@ -107,12 +112,13 @@ def online_learning(init_M,
                     init_p0_z,
                     trials,
                     n_sweeps=1,
-                    eps=1e-10,
                     sigma=0.01,
                     lr=0.1,
                     suff_stats_discount=0.99,
                     iters_per_trial=10,
-                    x_oracle=False):
+                    x_oracle=False,
+                    eps=1e-10,
+                    w_update_threshold=1e-3):
     """
     Args:
         init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
@@ -120,11 +126,12 @@ def online_learning(init_M,
         init_p0_z: initial distribution of z p(z_1=i): shape (nz,)
         trials: list of trials with each trial being a tuple (c, x, sy)
         n_sweeps: number of sweeps (for true online learning, set to 1)
-        eps: small constant for numerical stability
         sigma: std of observation noise
         lr: learning rate
         suff_stats_discount: discount factor for sufficient statistics
         iters_per_trial: number of iterations per trial
+        eps: small constant for numerical stability
+        w_update_threshold: only update w params if the total expected visits of this state in the current trial exceeds this value; prevents decay of w params on rarely visited states
     
     Returns:
         learned_M: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
@@ -164,9 +171,10 @@ def online_learning(init_M,
                 lr=lr,
                 suff_stats_discount=suff_stats_discount,
                 iters_per_trial=iters_per_trial,
-                eps=eps,
                 sigma=sigma,
-                x_oracle=x_oracle)
+                x_oracle=x_oracle,
+                eps=eps,
+                w_update_threshold=w_update_threshold)
 
             if itrial % 10 == 0:
                 # evaluate the final parameters on all the trials
@@ -288,9 +296,10 @@ def _online_learning_single_trial(
     lr,
     suff_stats_discount,
     iters_per_trial,
-    eps,
     sigma,
-    x_oracle):
+    x_oracle,
+    w_update_threshold=1e-3,
+    eps=1e-10):
 
     c, x, sy = trial
     w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
@@ -322,9 +331,23 @@ def _online_learning_single_trial(
         tmtrx_this_trial = _add_with_discount(
             curr_tmtrx, xi.sum((1, -1)), suff_stats_discount) + eps
 
-        learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
-        learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
-        learned_p0_z_this_trial = _update(curr_p0_z, gamma[..., 0].sum((0, 1)), lr)
+        W_update_mask = np.repeat(w_table_denom_this_trial[..., None] > w_update_threshold, 6, axis=-1)
+        # learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
+        # learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
+        # learned_p0_z_this_trial = _update(curr_p0_z, gamma[..., 0].sum((0, 1)), lr)
+        learned_M_this_trial = _update(
+            curr_M,
+            tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True),
+            lr)
+        learned_W_this_trial = _update(
+            curr_W,
+            w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps),
+            lr,
+            mask=W_update_mask)
+        learned_p0_z_this_trial = _update(
+            curr_p0_z,
+            gamma[..., 0].sum((0, 1)),
+            lr)
 
 
     # log suff stats from the final iter as the suff stats for the next trial
@@ -332,12 +355,19 @@ def _online_learning_single_trial(
     w_table_denom = w_table_denom_this_trial.copy()
     tmtrx = tmtrx_this_trial.copy()
 
+    learned_M = learned_M_this_trial.copy()
+    learned_W = learned_W_this_trial.copy()
+    learned_p0_z = learned_p0_z_this_trial.copy()
+
+
     # online update of parameters
     # learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
     # learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
     # learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
-    learned_M = _update(curr_M, tmtrx / tmtrx.sum(axis=-1, keepdims=True), lr)
-    learned_W = _update(curr_W, w_table_numer / (w_table_denom[..., None] + eps), lr)
-    learned_p0_z = _update(curr_p0_z, learned_p0_z_this_trial, lr)
+
+    
+    # learned_M = _update(curr_M, tmtrx / tmtrx.sum(axis=-1, keepdims=True), lr)
+    # learned_W = _update(curr_W, w_table_numer / (w_table_denom[..., None] + eps), lr, mask=W_update_mask)
+    # learned_p0_z = _update(curr_p0_z, learned_p0_z_this_trial, lr)
 
     return learned_M, learned_W, learned_p0_z, w_table_numer, w_table_denom, tmtrx
