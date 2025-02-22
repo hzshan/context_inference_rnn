@@ -60,9 +60,9 @@ def offline_learning(init_M,
 
     for irun in range(max_iter):
         curr_total_LL = 0
-        tmtrx = np.zeros((nc, nz, nz))
-        w_table_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
-        w_table_denom = np.zeros((nx, nz))
+        transition_counts = np.zeros((nc, nz, nz))
+        W_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
+        W_denom = np.zeros((nx, nz))
         gamma_across_trials = []
 
         for itrial in range(n_trials):
@@ -83,9 +83,9 @@ def offline_learning(init_M,
             curr_total_LL += LL
 
             learned_p0_z += gamma[..., 0].sum((0, 1))
-            tmtrx += xi.sum((1, -1))
-            w_table_numer += gamma.sum(0) @ w_arr  # nx, nz, d
-            w_table_denom += gamma.sum((0, -1))
+            transition_counts += xi.sum((1, -1))
+            W_numer += gamma.sum(0) @ w_arr  # nx, nz, d
+            W_denom += gamma.sum((0, -1))
 
         # check convergence
         LLpT_over_time.append(curr_total_LL / n_trials)
@@ -96,9 +96,9 @@ def offline_learning(init_M,
         # update parameters
         learned_p0_z += eps
         learned_p0_z = learned_p0_z / learned_p0_z.sum()
-        tmtrx += eps
-        learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True)
-        learned_W = w_table_numer / (w_table_denom[..., None] + eps)
+        transition_counts += eps
+        learned_M = transition_counts / transition_counts.sum(axis=-1, keepdims=True)
+        learned_W = W_numer / (W_denom[..., None] + eps)
     
     # warn if not converged
     if irun == max_iter - 1:
@@ -150,23 +150,23 @@ def online_learning(init_M,
     LLpT_over_time = []
 
     # initialize sufficient statistics
-    tmtrx = np.zeros((nc, nz, nz))
-    w_table_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
-    w_table_denom = np.zeros((nx, nz))
+    transition_counts = np.zeros((nc, nz, nz))
+    W_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
+    W_denom = np.zeros((nx, nz))
 
     for i in range(n_sweeps):
         
         for itrial in range(len(trials)):
             
             (learned_M, learned_W,
-             learned_p0_z, w_table_numer,
-             w_table_denom, tmtrx) = _online_learning_single_trial(
+             learned_p0_z, W_numer,
+             W_denom, transition_counts) = _online_learning_single_trial(
                 curr_W=learned_W,
                 curr_M=learned_M,
                 curr_p0_z=learned_p0_z,
-                curr_w_table_numer=w_table_numer,
-                curr_w_table_denom=w_table_denom,
-                curr_tmtrx=tmtrx,
+                curr_W_numer=W_numer,
+                curr_W_denom=W_denom,
+                curr_transition_counts=transition_counts,
                 trial=trials[itrial],
                 lr=lr,
                 suff_stats_discount=suff_stats_discount,
@@ -289,9 +289,9 @@ def _online_learning_single_trial(
     curr_W,
     curr_M,
     curr_p0_z,
-    curr_w_table_numer,
-    curr_w_table_denom,
-    curr_tmtrx,
+    curr_W_numer,
+    curr_W_denom,
+    curr_transition_counts,
     trial,
     lr,
     suff_stats_discount,
@@ -308,9 +308,9 @@ def _online_learning_single_trial(
     learned_M_this_trial = curr_M.copy()
     learned_p0_z_this_trial = curr_p0_z.copy()
 
-    w_table_numer_this_trial = curr_w_table_numer.copy()
-    w_table_denom_this_trial = curr_w_table_denom.copy()
-    tmtrx_this_trial = curr_tmtrx.copy()
+    W_numer_this_trial = None
+    W_denom_this_trial = None
+    transition_counts_this_trial = None
 
     for iiter in range(iters_per_trial):
 
@@ -323,25 +323,28 @@ def _online_learning_single_trial(
             x_oracle=x_oracle,
             sigma=sigma)
         
-        # sufficient stats at each iter is a combination of those from teh previous trial and those from the current iter
-        w_table_numer_this_trial = _add_with_discount(
-            curr_w_table_numer, gamma.sum(0) @ w_arr, suff_stats_discount)
-        w_table_denom_this_trial = _add_with_discount(
-            curr_w_table_denom, gamma.sum((0, -1)), suff_stats_discount)
-        tmtrx_this_trial = _add_with_discount(
-            curr_tmtrx, xi.sum((1, -1)), suff_stats_discount) + eps
+        # sufficient stats at each iter is a combination of those from the
+        #  previous trial and those from the current iter
+        W_numer_this_trial = _add_with_discount(
+            curr_W_numer, gamma.sum(0) @ w_arr, suff_stats_discount)
+        W_denom_this_trial = _add_with_discount(
+            curr_W_denom, gamma.sum((0, -1)), suff_stats_discount)
+        transition_counts_this_trial = _add_with_discount(
+            curr_transition_counts, xi.sum((1, -1)), suff_stats_discount) + eps
 
-        W_update_mask = np.repeat(w_table_denom_this_trial[..., None] > w_update_threshold, 6, axis=-1)
-        # learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
-        # learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
-        # learned_p0_z_this_trial = _update(curr_p0_z, gamma[..., 0].sum((0, 1)), lr)
+        # only decay/update parts of W that are visited a lot
+        W_update_mask = np.repeat(
+            W_denom_this_trial[..., None] > w_update_threshold, 6, axis=-1)
+
+        # update parameters
         learned_M_this_trial = _update(
             curr_M,
-            tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True),
+            (transition_counts_this_trial /
+             transition_counts_this_trial.sum(axis=-1, keepdims=True)),
             lr)
         learned_W_this_trial = _update(
             curr_W,
-            w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps),
+            W_numer_this_trial / (W_denom_this_trial[..., None] + eps),
             lr,
             mask=W_update_mask)
         learned_p0_z_this_trial = _update(
@@ -349,25 +352,13 @@ def _online_learning_single_trial(
             gamma[..., 0].sum((0, 1)),
             lr)
 
-
-    # log suff stats from the final iter as the suff stats for the next trial
-    w_table_numer = w_table_numer_this_trial.copy()
-    w_table_denom = w_table_denom_this_trial.copy()
-    tmtrx = tmtrx_this_trial.copy()
+    # store stats/params after this trial
+    W_numer = W_numer_this_trial.copy()
+    W_denom = W_denom_this_trial.copy()
+    transition_counts = transition_counts_this_trial.copy()
 
     learned_M = learned_M_this_trial.copy()
     learned_W = learned_W_this_trial.copy()
     learned_p0_z = learned_p0_z_this_trial.copy()
 
-
-    # online update of parameters
-    # learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
-    # learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
-    # learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
-
-    
-    # learned_M = _update(curr_M, tmtrx / tmtrx.sum(axis=-1, keepdims=True), lr)
-    # learned_W = _update(curr_W, w_table_numer / (w_table_denom[..., None] + eps), lr, mask=W_update_mask)
-    # learned_p0_z = _update(curr_p0_z, learned_p0_z_this_trial, lr)
-
-    return learned_M, learned_W, learned_p0_z, w_table_numer, w_table_denom, tmtrx
+    return learned_M, learned_W, learned_p0_z, W_numer, W_denom, transition_counts
