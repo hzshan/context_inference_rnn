@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import random
@@ -11,7 +12,7 @@ import matplotlib.pyplot as plt
 
 
 class CXTRNN(nn.Module):
-    def __init__(self, dim_s=3, dim_y=3, dim_z=6, rank=6, dim_hid=50, alpha=0.2):
+    def __init__(self, dim_s=3, dim_y=3, dim_z=6, rank=6, dim_hid=50, alpha=0.2, gating_type='nl'):
         super(CXTRNN, self).__init__()
         self.U = nn.Parameter(torch.randn(dim_hid, rank) * 0.1)
         self.V = nn.Parameter(torch.randn(dim_hid, rank) * 0.1)
@@ -21,10 +22,22 @@ class CXTRNN(nn.Module):
         self.nm_layer = nn.Linear(dim_z, rank)
         self.alpha = alpha
         self.dim_hid = dim_hid
+        self.gating_type = gating_type
+
+    def gating(self, z_t):
+        if self.gating_type == 'o':
+            return z_t
+        elif isinstance(self.gating_type, int):
+            return z_t.unsqueeze(-1).expand(-1, -1, self.gating_type).reshape(z_t.shape[0], -1)
+        elif self.gating_type == 'l':
+            return self.nm_layer(z_t)
+        elif self.gating_type == 'nl':
+            return torch.sigmoid(self.nm_layer(z_t))
+        else:
+            raise NotImplementedError
 
     def step(self, s_t, z_t, state):
-        gating = torch.sigmoid(self.nm_layer(z_t))
-        tmp = torch.einsum('br,hr,kr,bk->bh', gating, self.U, self.V, torch.tanh(state))
+        tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t), self.U, self.V, torch.tanh(state))
         x = (1 - self.alpha) * state + self.alpha * (tmp + self.input_layer(s_t))
         y = self.output_layer(x)
         return y, x
@@ -100,18 +113,83 @@ def set_deterministic(seed):
     return
 
 
-def train_rnn(model_kwargs, epochs=15, seed=0, n_trials=2560, batch_size=64, save_dir=None):
+def train_rnn_sequential(model_kwargs, seed=0, lr=0.01,
+                         batch_size=256, num_iter=500, n_trials_ts=200,
+                         task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
+                         z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
+                         verbose=True, save_dir=None):
+    set_deterministic(seed)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = CXTRNN(**model_kwargs).to(device)
+    print(get_n_params(model), flush=True)
+
+    ts_data_loaders = []
+    for itask, task in enumerate(task_list):
+        multitask_dataset_ts = MultiTaskDataset(n_trials=n_trials_ts, task_list=[task], z_list=z_list)
+        ts_data_loader = DataLoader(dataset=multitask_dataset_ts, batch_size=batch_size, collate_fn=collate_fn)
+        ts_data_loaders.append(ts_data_loader)
+
+    tr_loss_arr = []
+    ts_loss_arr = [[] for _ in task_list]
+    for itask, task in enumerate(task_list):
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        for iter in range(num_iter):
+            multitask_dataset_tr = MultiTaskDataset(n_trials=batch_size, task_list=[task], z_list=z_list)
+            tr_data_loader = DataLoader(dataset=multitask_dataset_tr, batch_size=batch_size, collate_fn=collate_fn)
+            model.train()
+            for ib, cur_batch in enumerate(tr_data_loader):
+                syz, lengths = cur_batch
+                syz = syz.to(device)
+                s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
+                z = F.one_hot(z.to(torch.int64), num_classes=len(z_list)).float()
+                out = model(s, z)
+                loss = masked_mse_loss(out, y, lengths)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            if iter % 10 == 0:
+                tr_loss_arr.append(loss.item())
+                if verbose:
+                    print(f'task {task}, iter {iter}, train loss: {loss.item():.4f}', flush=True)
+                # evaluate model on all tasks
+                model.eval()
+                with torch.no_grad():
+                    for itask_ts, task_ts in enumerate(task_list):
+                        avg_ts_loss = []
+                        for ib, cur_batch in enumerate(ts_data_loaders[itask_ts]):
+                            syz, lengths = cur_batch
+                            syz = syz.to(device)
+                            s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
+                            z = F.one_hot(z.to(torch.int64), num_classes=len(z_list)).float()
+                            out = model(s, z)
+                            loss = masked_mse_loss(out, y, lengths)
+                            avg_ts_loss.append(loss.item())
+                        avg_ts_loss = np.mean(avg_ts_loss)
+                        ts_loss_arr[itask_ts].append(avg_ts_loss)
+                        if verbose:
+                            print(f'test loss on task {task_ts}: {avg_ts_loss:.4f}', flush=True)
+    tr_loss_arr = np.array(tr_loss_arr)
+    ts_loss_arr = np.array(ts_loss_arr)
+    if save_dir is not None:
+        torch.save(model.state_dict(), save_dir + '/model.pth')
+        np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
+        np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
+    return model, tr_loss_arr, ts_loss_arr
+
+
+def train_rnn(model_kwargs, epochs=15, seed=0, n_trials=25600, batch_size=256, save_dir=None):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = CXTRNN(**model_kwargs).to(device)
     print(get_n_params(model), flush=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.7)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.8)
     ##################
-    multitask_dataset = MultiTaskDataset(n_trials=n_trials)
-    n_trials_tr = int(0.8 * n_trials)
-    tr_data_loader = DataLoader(dataset=multitask_dataset[:n_trials_tr], batch_size=batch_size, collate_fn=collate_fn)
-    ts_data_loader = DataLoader(dataset=multitask_dataset[n_trials_tr:], batch_size=batch_size, collate_fn=collate_fn)
+    dim_z = 6
+    multitask_dataset_tr = MultiTaskDataset(n_trials=n_trials)
+    multitask_dataset_ts = MultiTaskDataset(n_trials=int(n_trials / 5))
+    tr_data_loader = DataLoader(dataset=multitask_dataset_tr, batch_size=batch_size, collate_fn=collate_fn)
+    ts_data_loader = DataLoader(dataset=multitask_dataset_ts, batch_size=batch_size, collate_fn=collate_fn)
     tr_loss_arr = []
     ts_loss_arr = []
     ##################
@@ -123,7 +201,7 @@ def train_rnn(model_kwargs, epochs=15, seed=0, n_trials=2560, batch_size=64, sav
             syz, lengths = cur_batch
             syz = syz.to(device)
             s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-            z = F.one_hot(z.to(torch.int64), num_classes=6).float()
+            z = F.one_hot(z.to(torch.int64), num_classes=dim_z).float()
             out = model(s, z)
             loss = masked_mse_loss(out, y, lengths)
             optimizer.zero_grad()
@@ -142,18 +220,20 @@ def train_rnn(model_kwargs, epochs=15, seed=0, n_trials=2560, batch_size=64, sav
                 syz, lengths = cur_batch
                 syz = syz.to(device)
                 s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-                z = F.one_hot(z.to(torch.int64), num_classes=6).float()
+                z = F.one_hot(z.to(torch.int64), num_classes=dim_z).float()
                 out = model(s, z)
                 loss = masked_mse_loss(out, y, lengths)
                 avg_ts_loss.append(loss.item())
                 print(f'epoch {epoch} test, batch {ib}, test loss: {loss.item():.4f}', flush=True)
             ts_loss_arr.append(np.mean(avg_ts_loss))
         ########################
+    tr_loss_arr = np.array(tr_loss_arr)
+    ts_loss_arr = np.array(ts_loss_arr)
     if save_dir is not None:
         torch.save(model.state_dict(), save_dir + '/model.pth')
-        np.save(save_dir + '/tr_loss.npy', np.array(tr_loss_arr).astype(float))
-        np.save(save_dir + '/ts_loss.npy', np.array(ts_loss_arr).astype(float))
-    return
+        np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
+        np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
+    return model, tr_loss_arr, ts_loss_arr
 
 
 if __name__ == '__main__':
