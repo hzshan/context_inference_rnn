@@ -7,8 +7,18 @@ import inference
 # LLpT: log likelihood per trial, total_LL / n_trials
 
 
-def _update(orig, new, lr):
-    return orig * (1 - lr) + new * lr
+def _update(orig, new, lr, mask=None):
+    if mask is None:
+        return orig * (1 - lr) + new * lr
+    else:
+        output = orig.copy()
+        output[mask] = output[mask] * (1 - lr) + new[mask] * lr
+        return output
+
+
+def _add_with_discount(orig, new, discount):
+    return orig * discount + new
+
 
 def offline_learning(init_M,
                      init_W,
@@ -50,9 +60,9 @@ def offline_learning(init_M,
 
     for irun in range(max_iter):
         curr_total_LL = 0
-        tmtrx = np.zeros((nc, nz, nz))
-        w_table_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
-        w_table_denom = np.zeros((nx, nz))
+        transition_counts = np.zeros((nc, nz, nz))
+        W_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
+        W_denom = np.zeros((nx, nz))
         gamma_across_trials = []
 
         for itrial in range(n_trials):
@@ -73,9 +83,9 @@ def offline_learning(init_M,
             curr_total_LL += LL
 
             learned_p0_z += gamma[..., 0].sum((0, 1))
-            tmtrx += xi.sum((1, -1))
-            w_table_numer += gamma.sum(0) @ w_arr  # nx, nz, d
-            w_table_denom += gamma.sum((0, -1))
+            transition_counts += xi.sum((1, -1))
+            W_numer += gamma.sum(0) @ w_arr  # nx, nz, d
+            W_denom += gamma.sum((0, -1))
 
         # check convergence
         LLpT_over_time.append(curr_total_LL / n_trials)
@@ -86,9 +96,9 @@ def offline_learning(init_M,
         # update parameters
         learned_p0_z += eps
         learned_p0_z = learned_p0_z / learned_p0_z.sum()
-        tmtrx += eps
-        learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True)
-        learned_W = w_table_numer / (w_table_denom[..., None] + eps)
+        transition_counts += eps
+        learned_M = transition_counts / transition_counts.sum(axis=-1, keepdims=True)
+        learned_W = W_numer / (W_denom[..., None] + eps)
     
     # warn if not converged
     if irun == max_iter - 1:
@@ -102,11 +112,13 @@ def online_learning(init_M,
                     init_p0_z,
                     trials,
                     n_sweeps=1,
-                    eps=1e-10,
                     sigma=0.01,
                     lr=0.1,
+                    suff_stats_discount=0.99,
                     iters_per_trial=10,
-                    x_oracle=False):
+                    x_oracle=False,
+                    eps=1e-10,
+                    w_update_threshold=1e-3):
     """
     Args:
         init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
@@ -114,10 +126,12 @@ def online_learning(init_M,
         init_p0_z: initial distribution of z p(z_1=i): shape (nz,)
         trials: list of trials with each trial being a tuple (c, x, sy)
         n_sweeps: number of sweeps (for true online learning, set to 1)
-        eps: small constant for numerical stability
         sigma: std of observation noise
         lr: learning rate
+        suff_stats_discount: discount factor for sufficient statistics
         iters_per_trial: number of iterations per trial
+        eps: small constant for numerical stability
+        w_update_threshold: only update w params if the total expected visits of this state in the current trial exceeds this value; prevents decay of w params on rarely visited states
     
     Returns:
         learned_M: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
@@ -136,64 +150,35 @@ def online_learning(init_M,
     LLpT_over_time = []
 
     # initialize sufficient statistics
-    tmtrx = np.zeros((nc, nz, nz))
-    w_table_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
-    w_table_denom = np.zeros((nx, nz))
+    transition_counts = np.zeros((nc, nz, nz))
+    W_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
+    W_denom = np.zeros((nx, nz))
 
     for i in range(n_sweeps):
         
         for itrial in range(len(trials)):
             
-            # load trial
-            c, x, sy = trials[itrial]
-            w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
-
-            # i guess we could initialize them at random as well
-            learned_W_this_trial = learned_W.copy()
-            learned_M_this_trial = learned_M.copy()
-            learned_p0_z_this_trial = learned_p0_z.copy()
-
-            w_table_numer_this_trial = w_table_numer.copy()
-            w_table_denom_this_trial = w_table_denom.copy()
-            tmtrx_this_trial = tmtrx.copy()
-
-            for iiter in range(iters_per_trial):
-
-                # get sufficient statistics for this trial
-                gamma, xi, _, _ = get_stats_for_single_trial(
-                    single_trial=trials[itrial],
-                    W=learned_W_this_trial,
-                    M=learned_M_this_trial, 
-                    p0_z=learned_p0_z_this_trial,
-                    x_oracle=x_oracle,
-                    sigma=sigma)
-                
-                # sufficient stats at each iter is a combination of those from teh previous trial and those from the current iter
-                w_table_numer_this_trial = _update(w_table_numer, gamma.sum(0) @ w_arr, lr)
-                w_table_denom_this_trial = _update(w_table_denom, gamma.sum((0, -1)), lr)
-                tmtrx_this_trial = _update(tmtrx, xi.sum((1, -1)), lr) + eps
-            
-                learned_M_this_trial = tmtrx_this_trial / tmtrx_this_trial.sum(axis=-1, keepdims=True)
-                learned_W_this_trial = w_table_numer_this_trial / (w_table_denom_this_trial[..., None] + eps)
-                learned_p0_z_this_trial = _update(learned_p0_z, gamma[..., 0].sum((0, 1)), lr)
-
-
-            # log suff stats from the final iter as the suff stats for the next trial
-            w_table_numer = w_table_numer_this_trial.copy()
-            w_table_denom = w_table_denom_this_trial.copy()
-            tmtrx = tmtrx_this_trial.copy()
-
-            # online update of parameters
-            # learned_M = tmtrx / tmtrx.sum(axis=-1, keepdims=True) * lr + learned_M * (1 - lr)
-            # learned_W = w_table_numer / (w_table_denom[..., None] + eps) * lr + learned_W * (1 - lr)
-            # learned_p0_z = learned_p0_z_this_trial.copy() * lr + learned_p0_z * (1 - lr)
-            learned_M = _update(learned_M, tmtrx / tmtrx.sum(axis=-1, keepdims=True), lr)
-            learned_W = _update(learned_W, w_table_numer / (w_table_denom[..., None] + eps), lr)
-            learned_p0_z = _update(learned_p0_z, learned_p0_z_this_trial, lr)
+            (learned_M, learned_W,
+             learned_p0_z, W_numer,
+             W_denom, transition_counts) = _online_learning_single_trial(
+                curr_W=learned_W,
+                curr_M=learned_M,
+                curr_p0_z=learned_p0_z,
+                curr_W_numer=W_numer,
+                curr_W_denom=W_denom,
+                curr_transition_counts=transition_counts,
+                trial=trials[itrial],
+                lr=lr,
+                suff_stats_discount=suff_stats_discount,
+                iters_per_trial=iters_per_trial,
+                sigma=sigma,
+                x_oracle=x_oracle,
+                eps=eps,
+                w_update_threshold=w_update_threshold)
 
             if itrial % 10 == 0:
                 # evaluate the final parameters on all the trials
-                gamma_across_trials, curr_LLpT = get_stats_for_multiple_trials(
+                gamma_across_trials, curr_LLpT, _ = get_stats_for_multiple_trials(
                     trials, learned_W, learned_M, learned_p0_z, sigma, x_oracle)
 
                 LLpT_over_time.append(curr_LLpT)
@@ -281,17 +266,99 @@ def get_stats_for_multiple_trials(
     Returns:
         gamma_across_trials: list of gamma for each trial
         LLpT: log likelihood of a single trial, averaged over trials
+        LL_across_trials: list of log likelihood for each trial
     """
-    total_LL = 0
+
     gamma_across_trials = []
+    LL_across_trials = []
     for itrial in range(len(trials)):
 
         gamma, _, _, LL = get_stats_for_single_trial(
             single_trial=trials[itrial],
             W=W, M=M, p0_z=p0_z, x_oracle=x_oracle, sigma=sigma)
-        total_LL += LL
+        LL_across_trials.append(LL)
         gamma_across_trials.append(gamma)
-    
+
+    total_LL = np.sum(LL_across_trials)
     LLpT = total_LL / len(trials)
     
-    return gamma_across_trials, LLpT
+    return gamma_across_trials, LLpT, LL_across_trials
+
+
+def _online_learning_single_trial(
+    curr_W,
+    curr_M,
+    curr_p0_z,
+    curr_W_numer,
+    curr_W_denom,
+    curr_transition_counts,
+    trial,
+    lr,
+    suff_stats_discount,
+    iters_per_trial,
+    sigma,
+    x_oracle,
+    w_update_threshold=1e-3,
+    eps=1e-10):
+
+    c, x, sy = trial
+    w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
+
+    learned_W_this_trial = curr_W.copy()
+    learned_M_this_trial = curr_M.copy()
+    learned_p0_z_this_trial = curr_p0_z.copy()
+
+    W_numer_this_trial = None
+    W_denom_this_trial = None
+    transition_counts_this_trial = None
+
+    for iiter in range(iters_per_trial):
+
+        # get sufficient statistics for this trial
+        gamma, xi, _, _ = get_stats_for_single_trial(
+            single_trial=trial,
+            W=learned_W_this_trial,
+            M=learned_M_this_trial, 
+            p0_z=learned_p0_z_this_trial,
+            x_oracle=x_oracle,
+            sigma=sigma)
+        
+        # sufficient stats at each iter is a combination of those from the
+        #  previous trial and those from the current iter
+        W_numer_this_trial = _add_with_discount(
+            curr_W_numer, gamma.sum(0) @ w_arr, suff_stats_discount)
+        W_denom_this_trial = _add_with_discount(
+            curr_W_denom, gamma.sum((0, -1)), suff_stats_discount)
+        transition_counts_this_trial = _add_with_discount(
+            curr_transition_counts, xi.sum((1, -1)), suff_stats_discount) + eps
+
+        # only decay/update parts of W that are visited a lot
+        W_update_mask = np.repeat(
+            W_denom_this_trial[..., None] > w_update_threshold, 6, axis=-1)
+
+        # update parameters
+        learned_M_this_trial = _update(
+            curr_M,
+            (transition_counts_this_trial /
+             transition_counts_this_trial.sum(axis=-1, keepdims=True)),
+            lr)
+        learned_W_this_trial = _update(
+            curr_W,
+            W_numer_this_trial / (W_denom_this_trial[..., None] + eps),
+            lr,
+            mask=W_update_mask)
+        learned_p0_z_this_trial = _update(
+            curr_p0_z,
+            gamma[..., 0].sum((0, 1)),
+            lr)
+
+    # store stats/params after this trial
+    W_numer = W_numer_this_trial.copy()
+    W_denom = W_denom_this_trial.copy()
+    transition_counts = transition_counts_this_trial.copy()
+
+    learned_M = learned_M_this_trial.copy()
+    learned_W = learned_W_this_trial.copy()
+    learned_p0_z = learned_p0_z_this_trial.copy()
+
+    return learned_M, learned_W, learned_p0_z, W_numer, W_denom, transition_counts
