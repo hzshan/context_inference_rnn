@@ -117,7 +117,7 @@ def train_rnn_sequential(model_kwargs, seed=0, lr=0.01,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
-                         verbose=True, save_dir=None):
+                         frz_io_layer=False, verbose=True, save_dir=None):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = CXTRNN(**model_kwargs).to(device)
@@ -131,12 +131,19 @@ def train_rnn_sequential(model_kwargs, seed=0, lr=0.01,
 
     tr_loss_arr = []
     ts_loss_arr = [[] for _ in task_list]
+    U_arr = []
+    V_arr = []
     for itask, task in enumerate(task_list):
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         for iter in range(num_iter):
             multitask_dataset_tr = MultiTaskDataset(n_trials=batch_size, task_list=[task], z_list=z_list)
             tr_data_loader = DataLoader(dataset=multitask_dataset_tr, batch_size=batch_size, collate_fn=collate_fn)
             model.train()
+            if frz_io_layer:
+                for p in model.input_layer.parameters():
+                    p.requires_grad = False
+                for p in model.output_layer.parameters():
+                    p.requires_grad = False
             for ib, cur_batch in enumerate(tr_data_loader):
                 syz, lengths = cur_batch
                 syz = syz.to(device)
@@ -168,13 +175,19 @@ def train_rnn_sequential(model_kwargs, seed=0, lr=0.01,
                         ts_loss_arr[itask_ts].append(avg_ts_loss)
                         if verbose:
                             print(f'test loss on task {task_ts}: {avg_ts_loss:.4f}', flush=True)
+                U_arr.append(model.U.detach().cpu().numpy())
+                V_arr.append(model.V.detach().cpu().numpy())
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
+    U_arr = np.array(U_arr)
+    V_arr = np.array(V_arr)
     if save_dir is not None:
         torch.save(model.state_dict(), save_dir + '/model.pth')
         np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
-    return model, tr_loss_arr, ts_loss_arr
+        np.save(save_dir + '/U_arr.npy', U_arr)
+        np.save(save_dir + '/V_arr.npy', V_arr)
+    return model, tr_loss_arr, ts_loss_arr, U_arr, V_arr
 
 
 def train_rnn(model_kwargs, epochs=15, seed=0, n_trials=25600, batch_size=256, save_dir=None):
