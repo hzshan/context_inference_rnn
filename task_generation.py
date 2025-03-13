@@ -23,30 +23,31 @@ task_dict = {
     'DM': 'F/D->S_S->R_M_P' # respond to the stronger stimulus
 }
 
-def make_stim_input(stim: int, Te: int):
+
+def make_stim_input(stim: int, Te: int, d_stim: float):
     """
     Produce a Te x 2 matrix of noisy inputs for a given stimulus.
     if stim = -1, return zero-mean random noise
 
     Args:
-        stim: int in [-1, 0, 1]
+        stim: int in [-1, 0, 1, 2, ...]
         duration: number of time steps
-
+        d_stim: if stim >= 0, angle = d_stim * stim
     Returns:
         mean_stim: Te x 2 matrix of noisy inputs
 
     """
-    assert stim in [-1, 0, 1]
+    # assert stim in [-1, 0, 1]
 
     if stim == -1:
         return np.zeros((Te, 2))
     else:
-        angle = np.pi / 2 * stim
+        angle = d_stim * stim
         mean_stim = np.repeat(np.array([[np.cos(angle), np.sin(angle)]]), Te, axis=0)
         return mean_stim
 
 
-def make_input(stim: int, fixation: int, Te: int, sig_s: float,
+def make_input(stim: int, fixation: int, Te: int, sig_s: float, d_stim: float,
                contrast=1, other_stim_contrast=0):
     """
     Generates the input (s) for a given epoch. Assuming a single modality.
@@ -67,12 +68,12 @@ def make_input(stim: int, fixation: int, Te: int, sig_s: float,
     Returns:
         mean_input: Te x 3 matrix of noisy inputs
     """
-    assert stim in [-1, 0, 1]
+    # assert stim in [-1, 0, 1]
 
-    stim_input = make_stim_input(stim, Te) * contrast
+    stim_input = make_stim_input(stim, Te, d_stim) * contrast
 
     if stim != -1:
-        stim_input += make_stim_input(1 - stim, Te) * other_stim_contrast
+        stim_input += make_stim_input(stim + int(np.pi / d_stim), Te, d_stim) * other_stim_contrast
 
     assert fixation in [0, 1]
     fixation_input = np.random.normal(fixation, sig_s, (Te, 1))
@@ -111,7 +112,7 @@ def make_input(stim: int, fixation: int, Te: int, sig_s: float,
 #     return np.random.normal(mean_input, sig_s)
 
 
-def make_target_output(response: int, fixation: int, Te: int, sig_y: float):
+def make_target_output(response: int, fixation: int, Te: int, sig_y: float, d_stim: float):
     """
     Generates the target output (y) for a given epoch.
 
@@ -124,93 +125,103 @@ def make_target_output(response: int, fixation: int, Te: int, sig_y: float):
     Returns:
         mean_output: Te x 3 matrix of noisy target outputs
     """
-    target_output = make_stim_input(stim=response, Te=Te)
+    target_output = make_stim_input(stim=response, Te=Te, d_stim=d_stim)
     fixation_output = np.ones((Te, 1)) * fixation
     return np.random.normal(
         np.hstack([target_output, fixation_output]), sig_y)
 
 
-def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a fixation/delay epoch (F/D).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=-1, # no stimulus presentation
-                          fixation=1,
-                          Te=Te,
-                          sig_s=sig_s),
+                           fixation=1,
+                           Te=Te,
+                           sig_s=sig_s,
+                           d_stim=d_stim),
             'y':make_target_output(response=-1,  # no stimulus response
-                                  fixation=1,
-                                  Te=Te,
-                                  sig_y=sig_y)}
+                                   fixation=1,
+                                   Te=Te,
+                                   sig_y=sig_y,
+                                   d_stim=d_stim)}
 
 
-def make_response_from_memory_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_response_from_memory_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response-from-memory pro epoch (R_M_P).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=-1, # no stimulus presentation
-                          fixation=0,
-                          Te=Te,
-                          sig_s=sig_s),
+                           fixation=0,
+                           Te=Te,
+                           sig_s=sig_s,
+                           d_stim=d_stim),
             'y':make_target_output(response=x['theta_task'],  #respond to the task variable
-                                  fixation=0,
-                                  Te=Te,
-                                  sig_y=sig_y)}
+                                   fixation=0,
+                                   Te=Te,
+                                   sig_y=sig_y,
+                                   d_stim=d_stim)}
 
 
-def make_response_from_memory_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_response_from_memory_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response-from-memory anti epoch (R_M_A).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=-1, # no stimulus presentation
-                          fixation=0,
-                          Te=Te,
-                          sig_s=sig_s),
-            'y':make_target_output(response=(x['theta_task'] + 1) % 2,  #respond to the anti task variable
-                                  fixation=0,
-                                  Te=Te,
-                                  sig_y=sig_y)}
+                           fixation=0,
+                           Te=Te,
+                           sig_s=sig_s,
+                           d_stim=d_stim),
+            'y':make_target_output(response=x['theta_task'] + int(np.pi / d_stim),  #respond to the anti task variable
+                                   fixation=0,
+                                   Te=Te,
+                                   sig_y=sig_y,
+                                   d_stim=d_stim)}
 
 
-def make_response_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_response_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response epoch that responds to the presented stimulus. (R_P).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=x['theta_task'], # no stimulus presentation
-                          fixation=0,
-                          Te=Te,
-                          sig_s=sig_s),
+                           fixation=0,
+                           Te=Te,
+                           sig_s=sig_s,
+                           d_stim=d_stim),
             'y':make_target_output(response=x['theta_task'],  #respond to the task variable
-                                  fixation=0,
-                                  Te=Te,
-                                  sig_y=sig_y)}
+                                   fixation=0,
+                                   Te=Te,
+                                   sig_y=sig_y,
+                                   d_stim=d_stim)}
 
 
-def make_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response epoch that responds to the anti stimulus. (R_A).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=x['theta_task'],
-                          fixation=0,
-                          Te=Te,
-                          sig_s=sig_s),
-            'y':make_target_output(response=(x['theta_task'] + 1) % 2,  #respond to the anti task variable
-                                  fixation=0,
-                                  Te=Te,
-                                  sig_y=sig_y)}
+                           fixation=0,
+                           Te=Te,
+                           sig_s=sig_s,
+                           d_stim=d_stim),
+            'y':make_target_output(response=x['theta_task'] + int(np.pi / d_stim),  #respond to the anti task variable
+                                   fixation=0,
+                                   Te=Te,
+                                   sig_y=sig_y,
+                                   d_stim=d_stim)}
 
 
-def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a stimulus epoch (S).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
@@ -219,30 +230,30 @@ def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
     # randomly choose a modality to present the stimulus
 
     return {'s':make_input(x['theta_task'],
-                          fixation=1, Te=Te,
-                          sig_s=sig_s),
+                           fixation=1, Te=Te,
+                           sig_s=sig_s, d_stim=d_stim),
             'y':make_target_output(response=-1,
-                                  fixation=1,
-                                  Te=Te,
-                                  sig_y=sig_y)}
+                                   fixation=1,
+                                   Te=Te,
+                                   sig_y=sig_y, d_stim=d_stim)}
 
 
-def make_superimposed_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_superimposed_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a superimposed stimulus epoch (S_S).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
     return {'s':make_input(stim=x['theta_task'],
-                          fixation=1, Te=Te,
-                          sig_s=sig_s, other_stim_contrast=0.5),
+                           fixation=1, Te=Te,
+                           sig_s=sig_s, d_stim=d_stim, other_stim_contrast=0.5),
             'y':make_target_output(response=-1,
                                   fixation=1,
                                   Te=Te,
-                                  sig_y=sig_y)}
+                                  sig_y=sig_y, d_stim=d_stim)}
 
 
-def make_both_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
+def make_both_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a both-stimuli-on epoch (S_B).
     Composed of input (s, Te x 3) and target output (y, Te x 3).
@@ -250,12 +261,12 @@ def make_both_epoch(x: dict, Te: int, sig_s: float, sig_y: float):
 
     return {'s':make_input(stim=x['theta_task'],
                           fixation=1, Te=Te,
-                          sig_s=sig_s,
+                          sig_s=sig_s, d_stim=d_stim,
                           other_stim_contrast=1),
             'y':make_target_output(response=-1,
                                   fixation=1,
                                   Te=Te,
-                                  sig_y=sig_y)}
+                                  sig_y=sig_y, d_stim=d_stim)}
 
 
 epoch_dict = {
@@ -270,7 +281,7 @@ epoch_dict = {
 }
 
 
-def parse_z_t(epoch_symbol: str, x: dict, sig_s: float, sig_y: float, Te: int):
+def parse_z_t(epoch_symbol: str, x: dict, sig_s: float, sig_y: float, d_stim: float, Te: int):
     """
 
     Args:
@@ -285,7 +296,7 @@ def parse_z_t(epoch_symbol: str, x: dict, sig_s: float, sig_y: float, Te: int):
     """
 
     fn_to_call = epoch_dict[epoch_symbol]
-    return fn_to_call(x, Te=Te, sig_s=sig_s, sig_y=sig_y)
+    return fn_to_call(x, Te=Te, sig_s=sig_s, sig_y=sig_y, d_stim=d_stim)
 
 
 def compose_trial(seq_of_epochs: str,
@@ -293,7 +304,8 @@ def compose_trial(seq_of_epochs: str,
                   sig_s: float,
                   sig_y: float,
                   p_stay,
-                  min_Te):
+                  min_Te,
+                  d_stim=np.pi/2):
     """
     Generates a trial composed of a sequence of epochs.
 
@@ -316,7 +328,7 @@ def compose_trial(seq_of_epochs: str,
 
     epochs = []
     for Te, epoch_symbol in zip(all_Te, epoch_symbols):
-        epochs.append(parse_z_t(epoch_symbol, x, sig_s, sig_y, Te))
+        epochs.append(parse_z_t(epoch_symbol, x, sig_s, sig_y, d_stim, Te))
     
     boundaries = np.cumsum(all_Te)
     return merge_epochs(epochs), boundaries
@@ -368,7 +380,8 @@ def compute_emission_logp(s_t,
                           z_t: str,
                           x: dict,
                           sigma_s=0.1,
-                          sigma_y=0.1):
+                          sigma_y=0.1,
+                          d_stim=np.pi/2):
     """
     Compute log likelihood of observing (s_t, y_t) under a given epoch (z) and 
     task variable (x) for each t in 1,...,s_t.shape[0].
@@ -390,9 +403,8 @@ def compute_emission_logp(s_t,
 
     num_timesteps = s_t.shape[0]
 
-
     epoch_mean = parse_z_t(epoch_symbol=z_t, x=x,
-                           sig_s=0, sig_y=0, Te=num_timesteps)
+                           sig_s=0, sig_y=0, d_stim=d_stim, Te=num_timesteps)
 
     logp = multivariate_log_likelihood(
         obs=s_t, mean=epoch_mean['s'], sigma=sigma_s)
@@ -463,6 +475,7 @@ def generate_trials(task_list: list,
                     sigma: float,
                     p_stay: float,
                     min_Te: int,
+                    d_stim=np.pi/2,
                     sort_by_task=False):
     
     #TODO: add options to change ordering of trials
@@ -480,7 +493,7 @@ def generate_trials(task_list: list,
         x = np.mod(itrial // nc, nx)
         sy, _ = compose_trial(
             task_dict[task_list[c]],
-            {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te)
+            {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te, d_stim=d_stim)
         trials.append((c, x, sy))
         task_ids.append(c)
 
@@ -493,7 +506,7 @@ def generate_trials(task_list: list,
     return trials, epoch_list
 
 
-def get_ground_truth(task_list, epoch_list, p_stay, nx, eps=1e-10):
+def get_ground_truth(task_list, epoch_list, p_stay, nx, d_stim=np.pi/2, eps=1e-10):
 
     true_M = np.zeros((len(task_list), len(epoch_list), len(epoch_list)))
     for itask, task_type in enumerate(task_list):
@@ -512,7 +525,7 @@ def get_ground_truth(task_list, epoch_list, p_stay, nx, eps=1e-10):
     true_W = np.zeros((nx, nz, 6))
     for x in range(nx):
         for z in range(nz):
-            true_sy_dict = parse_z_t(epoch_list[z], {'theta_task':x}, 0, 0, 1)
+            true_sy_dict = parse_z_t(epoch_list[z], {'theta_task':x}, 0, 0, d_stim, 1)
             true_W[x, z, :] = np.hstack([true_sy_dict['s'], true_sy_dict['y']])
  
     true_p0_z = np.zeros((nz))
