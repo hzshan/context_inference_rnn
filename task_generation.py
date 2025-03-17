@@ -463,7 +463,7 @@ def generate_trials(task_list: list,
                     sigma: float,
                     p_stay: float,
                     min_Te: int,
-                    sort_by_task=False):
+                    shuffle=False):
     
     #TODO: add options to change ordering of trials
 
@@ -473,22 +473,23 @@ def generate_trials(task_list: list,
         epoch_list += task_dict[task].split('->')
     epoch_list = list(set(epoch_list))
 
+    n_trials_per_task = int(n_trials / nc)
+
     trials = []
-    task_ids = []
-    for itrial in range(n_trials):
-        c = np.mod(itrial, nc)
-        x = np.mod(itrial // nc, nx)
-        sy, _ = compose_trial(
-            task_dict[task_list[c]],
-            {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te)
-        trials.append((c, x, sy))
-        task_ids.append(c)
+    for task_ind, task_type in enumerate(task_list):
+        for trial_ind in range(n_trials_per_task):
+            x = np.mod(trial_ind, nx)
+            sy, _ = compose_trial(
+                task_dict[task_type],
+                {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te)
+            trials.append((task_ind, x, sy))
+
 
     trials = np.array(trials)
 
-    if sort_by_task:
-        sort_idx = np.argsort(task_ids)
-        trials = trials[sort_idx]
+    if shuffle:
+        shuffle_ind = np.random.permutation(len(trials))
+        trials = trials[shuffle_ind]
 
     return trials, epoch_list
 
