@@ -1,0 +1,72 @@
+import os
+import numpy as np
+from train_config import save_config, vary_config
+
+
+def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
+    if cluster:
+        with open(save_name + '.sh', 'w') as f:
+            f.write('#!/bin/bash\n'
+                    + '\n'
+                    + '#SBATCH --nodes=1\n'
+                    + f'#SBATCH --cpus-per-task={num_cpu}\n'
+                    + f'#SBATCH --gres=gpu:{num_gpu}\n'
+                    # + '#SBATCH --nodelist=ax21\n'
+                    + f'#SBATCH --output={save_name}.out\n'
+                    + '\n'
+                    + '\n'
+                    + f'python3 train.py --save_name={save_name} '
+                    + '\n'
+                    + 'exit 0;\n')
+        test_cmd = f'sbatch --qos=high-priority {save_name}.sh'
+        os.system(test_cmd)
+    else:
+        test_cmd = f'python3 train.py --save_name={save_name}'
+        os.system(test_cmd)
+    return
+
+
+def cxtrnn_config():
+    config = dict(seed=0, dim_hid=50, alpha=0.5,
+                  gating_type=3, nonlin='tanh', init_scale=0.1,
+                  lr=0.01, weight_decay=0, batch_size=256, num_iter=500, n_trials_ts=200,
+                  sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
+                  task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
+                  z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
+                  frz_io_layer=True, verbose=True, save_dir=None, retrain=True)
+    config_ranges = {
+        'min_Te': [5],
+        # 'nx': [4],
+        'dim_hid': [50, 256],
+        'nonlin': ['relu'],
+        # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
+        # 'num_iter': [1000],
+        # 'lr': [1e-3],
+        # 'weight_decay': [1e-7],
+        'seed': [0],
+    }
+    configs = vary_config(config, config_ranges,
+                          mode=['combinatorial', 'sequential'][0])
+    save_names = []
+    for config in configs:
+        save_name = 'cxtrnn_seq_gating' + str(config['gating_type'])
+        save_name += '_frzio' if config['frz_io_layer'] else ''
+        save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
+        save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
+        save_name += '_' + ''.join([cur[0] for cur in config['task_list']])
+        save_name += '_' + ''.join([cur[-1] for cur in config['task_list']])
+        save_name += '_minT' + str(config['min_Te'])
+        save_name += '_nx' + str(config['nx']) + 'dx' + str(int(np.pi/config['d_stim']))
+        save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 500 else ''
+        save_name += ('_lr' + str(config['lr']).replace('.', 'pt')) if config['lr'] != 0.01 else ''
+        save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
+        save_name += '_sd' + str(config['seed'])
+        save_names.append(save_name)
+    return configs, save_names
+
+
+if __name__ == '__main__':
+    configs, save_names = cxtrnn_config()
+    for config, save_name in zip(configs, save_names):
+        save_config(config, save_name)
+        run_main(save_name, num_cpu=1, num_gpu=1)
