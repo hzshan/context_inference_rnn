@@ -1,5 +1,5 @@
 import numpy as np
-import inference
+import inference, sklearn.cluster
 
 # Terminology: 
 # LL: log likelihood of each trial
