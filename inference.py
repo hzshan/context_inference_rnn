@@ -1,9 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import multivariate_normal
 from scipy.special import logsumexp
 from task_generation import *
-
+# DEPRECATED: this code is deprecated and will be removed in future versions
 
 def _log(x):
     output = x.copy()

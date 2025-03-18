@@ -1,6 +1,7 @@
 import numpy as np
-import inference, sklearn.cluster
-
+import sklearn.cluster
+from scipy.special import logsumexp
+from task_generation import *
 # Terminology: 
 # LL: log likelihood of each trial
 # total_LL: sum of LLs across trials
@@ -65,14 +66,21 @@ class TaskModel:
                 w_update_threshold=1e-3)
         
     
-    def get_stats(self, trial):
+    def infer(self, trial, use_y=True):
+        """
+        gamma: p(c, x, z_t=i| w_{1:T}): shape (nc, nx, nz, nT)
+        xi: p(c, x, z_t=i, z_{t+1}=j| w_{1:T}): shape (nc, nx, nz, nz, nT-1)
+        p_cx: p(c, x | w_{1:T}): shape (nc, nx)
+        LL: log p(w_{1:T}): shape None
+        """
         gamma, _, _, LL = get_stats_for_single_trial(
             single_trial=trial,
             W=self.W,
             M=self.M,
             p0_z=self.p0_z,
             x_oracle=False,
-            sigma=self.sigma)
+            sigma=self.sigma,
+            show_y=use_y)
         return gamma, LL
 
 
@@ -407,7 +415,8 @@ def get_stats_for_single_trial(
         M: np.ndarray,
         p0_z: np.ndarray,
         x_oracle: bool,
-        sigma: float):
+        sigma: float,
+        show_y=True):
     """
 
     Args:
@@ -432,7 +441,11 @@ def get_stats_for_single_trial(
     assert sigma > 0
     
     c, x, sy = single_trial
-    obs = np.concatenate((sy['s'], sy['y']), axis=-1)
+    
+    if show_y:
+        obs = np.concatenate((sy['s'], sy['y']), axis=-1)
+    else:
+        obs = sy['s']
     
     prior_cx = np.zeros((nc, nx))
     if x_oracle:
@@ -448,12 +461,18 @@ def get_stats_for_single_trial(
 
     for ix, _ in enumerate(x_set):
         for iz in range(nz):
-            log_likes[ix, iz, :] = \
-                inference.multivariate_log_likelihood(
-                    obs=obs, mean=W[ix, iz][None, :],
-                    sigma=sigma)
+            if show_y:
+                log_likes[ix, iz, :] = \
+                    multivariate_log_likelihood(
+                        obs=obs, mean=W[ix, iz][None, :],
+                        sigma=sigma)
+            else:
+                log_likes[ix, iz, :] = \
+                    multivariate_log_likelihood(
+                        obs=obs, mean=W[ix, iz][None, :obs.shape[1]], #TODO
+                        sigma=sigma)
 
-    gamma, xi, p_cx, LL = inference.forward_backward(
+    gamma, xi, p_cx, LL = forward_backward(
         p0_z, M, log_likes, prior_cx=prior_cx)
 
     return gamma, xi, p_cx, LL
@@ -576,3 +595,65 @@ def _online_learning_single_trial(
     learned_p0_z = learned_p0_z_this_trial.copy()
 
     return learned_M, learned_W, learned_p0_z, W_numer, W_denom, transition_counts
+
+
+def _log(x):
+    output = x.copy()
+    output[x == 0] = -np.inf
+    output[x != 0] = np.log(x[x != 0])
+    return output
+
+
+def viterbi(p0_z, transition_matrix, log_likes):
+    nc, nz, _ = transition_matrix.shape
+    nx, _, nT = log_likes.shape
+    scores = np.zeros((nc, nx, nz, nT))
+    args = np.zeros((nc, nx, nz, nT), dtype=int)
+    for it in range(nT - 2, -1, -1):
+        vals = scores[..., it + 1] + log_likes[..., it + 1]
+        vals = _log(transition_matrix[:, None, :, :]) + vals[:, :, None, :]
+        args[..., it + 1] = np.argmax(vals, axis=-1)
+        scores[..., it] = np.max(vals, axis=-1)
+    scores_ = _log(p0_z) + scores[..., 0] + log_likes[..., 0]
+    ind_ = np.unravel_index(np.argmax(scores_, axis=None), scores_.shape)
+    z_ = np.zeros(nT, dtype=int)
+    z_[0] = ind_[2]
+    for it in range(1, nT):
+        z_[it] = args[ind_[0], ind_[1], z_[it - 1], it]
+    return ind_, z_
+
+
+def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None):
+    nc, nz, _ = transition_matrix.shape
+    nx, _, nT = log_likes.shape
+    alpha = np.zeros((nc, nx, nz, nT))
+    alpha[..., 0] = _log(p0_z) + log_likes[..., 0]
+    for it in range(nT - 1):
+        m = np.max(alpha[..., it], axis=-1, keepdims=True)
+        with np.errstate(divide='ignore'):
+            alpha[..., it + 1] = _log(np.einsum('cxi,cij->cxj', np.exp(alpha[..., it] - m),
+                                                   transition_matrix)) + m + log_likes[..., it + 1]
+    beta = np.zeros((nc, nx, nz, nT))
+    beta[..., nT - 1] = 0
+    for it in range(nT - 2, -1, -1):
+        tmp = log_likes[..., it + 1] + beta[..., it + 1]
+        m = np.max(tmp, axis=-1, keepdims=True)
+        with np.errstate(divide='ignore'):
+            beta[..., it] = _log(np.einsum('cij,cxj->cxi', transition_matrix,
+                                              np.exp(tmp - m))) + m
+    prior_cx = np.ones((nc, nx)) / (nc * nx) if prior_cx is None else prior_cx
+    # logp(w_{1:T}, c, x): shape (nc, nx)
+    logp_cx = logsumexp(alpha[..., -1], axis=-1) + _log(prior_cx)
+    # logp(w_{1:T}): shape None
+    logp_obsv = logsumexp(logp_cx)
+    # p(c, x | w_{1:T})
+    p_cx = np.exp(logp_cx - logp_obsv)
+    # p(z_t=i, c, x | w_{1:T}): shape (nc, nx, nz, nT)
+    gamma = alpha + beta + _log(prior_cx[:, :, None, None]) - logp_obsv
+    gamma = np.exp(gamma)
+    # p(z_t=i, z_{t+1}=j, c, x | w_{1:T}): shape (nc, nx, nz, nz, nT-1)
+    xi = alpha[:, :, :, None, :-1] + beta[:, :, None, :, 1:] + log_likes[:, None, :, 1:]
+    xi += _log(transition_matrix)[:, None, :, :, None]
+    xi += _log(prior_cx[:, :, None, None, None]) - logp_obsv
+    xi = np.exp(xi)
+    return gamma, xi, p_cx, logp_obsv
