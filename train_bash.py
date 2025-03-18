@@ -28,7 +28,7 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 
 def cxtrnn_config():
     config = dict(seed=0, dim_hid=50, alpha=0.5,
-                  gating_type=3, nonlin='tanh', init_scale=0.1,
+                  gating_type=3, nonlin='tanh', init_scale=0.1, sig_r=0,
                   lr=0.01, weight_decay=0, batch_size=256, num_iter=500, n_trials_ts=200,
                   sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                   task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
@@ -36,9 +36,12 @@ def cxtrnn_config():
                   frz_io_layer=True, verbose=True, save_dir=None, retrain=True)
     config_ranges = {
         'min_Te': [5],
+        # 'gating_type': [5, 8],
+        'sig_s': [0.1],
+        'sig_r': [0.05],
         # 'nx': [4],
-        'dim_hid': [50, 256],
-        'nonlin': ['relu'],
+        # 'dim_hid': [50, 256],
+        # 'nonlin': ['relu'],
         # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
         # 'num_iter': [1000],
         # 'lr': [1e-3],
@@ -53,8 +56,10 @@ def cxtrnn_config():
         save_name += '_frzio' if config['frz_io_layer'] else ''
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
+        save_name += ('_sigr' + str(config['sig_r'])).replace('.', 'pt') if config['sig_r'] != 0 else ''
         save_name += '_' + ''.join([cur[0] for cur in config['task_list']])
         save_name += '_' + ''.join([cur[-1] for cur in config['task_list']])
+        save_name += ('_sigs' + str(config['sig_s'])).replace('.', 'pt') if config['sig_s'] != 0.05 else ''
         save_name += '_minT' + str(config['min_Te'])
         save_name += '_nx' + str(config['nx']) + 'dx' + str(int(np.pi/config['d_stim']))
         save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 500 else ''
