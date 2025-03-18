@@ -476,7 +476,7 @@ def generate_trials(task_list: list,
                     p_stay: float,
                     min_Te: int,
                     d_stim=np.pi/2,
-                    sort_by_task=False):
+                    trial_order='interleaved'):
     
     #TODO: add options to change ordering of trials
 
@@ -486,22 +486,24 @@ def generate_trials(task_list: list,
         epoch_list += task_dict[task].split('->')
     epoch_list = list(set(epoch_list))
 
+    n_trials_per_task = int(n_trials / nc)
+    
+    if trial_order == 'interleaved':
+        task_ids = np.mod(np.arange(n_trials), nc)
+    else:
+        assert trial_order == 'blocked'
+        task_ids = np.repeat(np.arange(nc), n_trials_per_task)
+
     trials = []
-    task_ids = []
     for itrial in range(n_trials):
-        c = np.mod(itrial, nc)
-        x = np.mod(itrial // nc, nx)
+        c = task_ids[itrial]
+        x = itrial % nx
         sy, _ = compose_trial(
             task_dict[task_list[c]],
             {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te, d_stim=d_stim)
         trials.append((c, x, sy))
-        task_ids.append(c)
 
     trials = np.array(trials)
-
-    if sort_by_task:
-        sort_idx = np.argsort(task_ids)
-        trials = trials[sort_idx]
 
     return trials, epoch_list
 
