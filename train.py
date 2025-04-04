@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 class CXTRNN(nn.Module):
     def __init__(self, dim_s=3, dim_y=3, dim_z=6, rank=6, dim_hid=50, alpha=0.5,
-                 gating_type='nl', nonlin='tanh', init_scale=0.1, **kwargs):
+                 gating_type='nl', nonlin='tanh', init_scale=0.1, sig_r=0, **kwargs):
         super(CXTRNN, self).__init__()
         self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
         self.V = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
@@ -25,6 +25,7 @@ class CXTRNN(nn.Module):
         self.dim_hid = dim_hid
         self.gating_type = gating_type
         self.nonlin = getattr(torch, nonlin)
+        self.sig_r = sig_r
 
     def gating(self, z_t):
         if self.gating_type == 'o':
@@ -40,6 +41,7 @@ class CXTRNN(nn.Module):
 
     def step(self, s_t, z_t, state):
         tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t), self.U, self.V, self.nonlin(state))
+        tmp = tmp + np.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
         x = (1 - self.alpha) * state + self.alpha * (tmp + self.input_layer(s_t))
         y = self.output_layer(self.nonlin(x))
         return y, x
@@ -107,7 +109,7 @@ def set_deterministic(seed):
 
 
 def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
-                         gating_type=3, nonlin='tanh', init_scale=0.1,
+                         gating_type=3, nonlin='tanh', init_scale=0.1, sig_r=0,
                          lr=0.01, weight_decay=0, batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
@@ -117,7 +119,8 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     rank = len(z_list) * gating_type if isinstance(gating_type, int) else len(z_list)
     model = CXTRNN(dim_z=len(z_list), rank=rank, dim_hid=dim_hid, alpha=alpha,
-                   gating_type=gating_type, nonlin=nonlin, init_scale=init_scale).to(device)
+                   gating_type=gating_type, nonlin=nonlin,
+                   init_scale=init_scale, sig_r=sig_r).to(device)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
