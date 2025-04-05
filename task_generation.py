@@ -277,7 +277,9 @@ epoch_dict = {
     'R_M_P': make_response_from_memory_pro_epoch,
     'R_M_A': make_response_from_memory_anti_epoch,
     'R_P': make_response_pro_epoch,
-    'R_A': make_response_anti_epoch
+    'R_A': make_response_anti_epoch,
+    'F': make_delay_or_fixation_epoch,
+    'D': make_delay_or_fixation_epoch,
 }
 
 
@@ -322,9 +324,11 @@ def compose_trial(seq_of_epochs: str,
     """
     epoch_symbols = seq_of_epochs.split('->')
 
-    transition_probs = np.ones(len(epoch_symbols)) * (1 - p_stay)
-    
-    all_Te = [np.max([np.random.geometric(prob), min_Te]) for prob in transition_probs]
+    if p_stay is not None:
+        transition_probs = np.ones(len(epoch_symbols)) * (1 - p_stay)
+        all_Te = [np.max([np.random.geometric(prob), min_Te]) for prob in transition_probs]
+    else:
+        all_Te = np.random.choice([10, 20, 40, 80], size=len(epoch_symbols))
 
     epochs = []
     for Te, epoch_symbol in zip(all_Te, epoch_symbols):
@@ -455,7 +459,7 @@ def get_c_z_transition_matrix(task_dict, p_stay):
 
 def get_z_transition_matrix_per_task(task_dict, p_stay):
     task_list = list(task_dict.keys())
-    z_list = list(epoch_dict.keys())
+    z_list = list(epoch_dict.keys())[:-2]
     transition_matrix = np.zeros((len(task_list), len(z_list), len(z_list)))
     for itask, task_type in enumerate(task_list):
         transition_matrix[itask] = np.eye(len(z_list))

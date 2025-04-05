@@ -6,26 +6,83 @@ import numpy as np
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
-from task_generation import *
+from task_generation import compose_trial
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 
+def task_epoch(task, epoch_type=1):
+    if epoch_type == 1:
+        task_dict = {
+            'PRO_D': 'F/D->S->R_P',
+            'PRO_S': 'F/D->S->R_M_P',
+            'PRO_M': 'F/D->S->F/D->R_M_P',
+            'PRO_R': 'F/D->R_P',
+            'ANTI_D': 'F/D->S->R_A',
+            'ANTI_S': 'F/D->S->R_M_A',
+            'ANTI_M': 'F/D->S->F/D->R_M_A',
+            'ANTI_R': 'F/D->R_A',
+            'ORDER': 'F/D->S->S_B->R_M_P',
+            'DM': 'F/D->S_S->R_M_P'
+        }
+    elif epoch_type == 2:
+        task_dict = {
+            'PRO_D': 'F->S->R_P',
+            'PRO_S': 'F->S->R_M_P',
+            'PRO_M': 'F->S->D->R_M_P',
+            'PRO_R': 'F->R_P',
+            'ANTI_D': 'F->S->R_A',
+            'ANTI_S': 'F->S->R_M_A',
+            'ANTI_M': 'F->S->D->R_M_A',
+            'ANTI_R': 'F->R_A',
+            'ORDER': 'F->S->S_B->R_M_P',
+            'DM': 'F->S_S->R_M_P'
+        }
+    else:
+        raise NotImplementedError
+    return task_dict[task]
+
+
 class CXTRNN(nn.Module):
     def __init__(self, dim_s=3, dim_y=3, dim_z=6, rank=6, dim_hid=50, alpha=0.5,
-                 gating_type='nl', nonlin='tanh', init_scale=0.1, sig_r=0, **kwargs):
+                 gating_type='nl', share_io=True, nonlin='tanh',
+                 init_scale=0.1, sig_r=0, **kwargs):
         super(CXTRNN, self).__init__()
-        self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
+        self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale) #todo: vary initial scale
         self.V = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
-        self.input_layer = nn.Linear(dim_s, dim_hid)
-        self.output_layer = nn.Linear(dim_hid, dim_y)
+        # self.input_layer = nn.Linear(dim_s, dim_hid)
+        # self.output_layer = nn.Linear(dim_hid, dim_y)
+        self.dim_z = dim_z
+        num_io = 1 if share_io else dim_z
+        self.W_in = nn.Parameter(torch.randn(num_io, dim_hid, dim_s) * init_scale)
+        self.b_in = nn.Parameter(torch.randn(num_io, dim_hid) * init_scale)
+        self.W_out = nn.Parameter(torch.randn(num_io, dim_y, dim_hid) * init_scale)
+        self.b_out = nn.Parameter(torch.randn(num_io, dim_y) * init_scale)
         self.activation = torch.tanh
         self.nm_layer = nn.Linear(dim_z, rank)
         self.alpha = alpha
         self.dim_hid = dim_hid
         self.gating_type = gating_type
-        self.nonlin = getattr(torch, nonlin)
+        self.nonlin = getattr(F, nonlin) if nonlin != 'linear' else (lambda a: a)
         self.sig_r = sig_r
+
+    def input_layer(self, s_t, z_t):
+        # s_t: batch x dim, z_t: batch x num_z
+        W_in = self.W_in.expand(self.dim_z, -1, -1)
+        b_in = self.b_in.expand(self.dim_z, -1)
+        out = torch.einsum('zhs,bs->bzh', W_in, s_t)
+        out = out + b_in
+        out = torch.einsum('bz,bzh->bh', z_t, out)
+        return out
+
+    def output_layer(self, h_t, z_t):
+        # h_t: batch x dim, z_t: batch x num_z
+        W_out = self.W_out.expand(self.dim_z, -1, -1)
+        b_out = self.b_out.expand(self.dim_z, -1)
+        out = torch.einsum('zyh,bh->bzy', W_out, h_t)
+        out = out + b_out
+        out = torch.einsum('bz,bzy->by', z_t, out)
+        return out
 
     def gating(self, z_t):
         if self.gating_type == 'o':
@@ -42,8 +99,8 @@ class CXTRNN(nn.Module):
     def step(self, s_t, z_t, state):
         tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t), self.U, self.V, self.nonlin(state))
         tmp = tmp + np.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
-        x = (1 - self.alpha) * state + self.alpha * (tmp + self.input_layer(s_t))
-        y = self.output_layer(self.nonlin(x))
+        x = (1 - self.alpha) * state + self.alpha * (tmp + self.input_layer(s_t, z_t))
+        y = self.output_layer(self.nonlin(x), z_t)
         return y, x
 
     def forward(self, s, z):
@@ -70,17 +127,20 @@ def masked_mse_loss(predictions, targets, lengths):
 class MultiTaskDataset(Dataset):
     def __init__(self, n_trials=64, nx=2, sig_s=0.05, sig_y=0, d_stim=np.pi/2, p_stay=0.9, min_Te=5,
                  task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
-                 z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']):
+                 z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'], epoch_type=1, fixation_type=1):
         self.trials = []
 
         for i_trial in range(n_trials):
             task = np.random.choice(task_list)
             x = np.random.randint(nx)
-            sy, boundaries = compose_trial(task_dict[task], {'theta_task': x},
-                                           sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
+            epoch_str = task_epoch(task, epoch_type=epoch_type)
+            sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
             all_Te = np.diff([0] + list(boundaries))
-            z = [[z_list.index(cur)] * Te for cur, Te in zip(task_dict[task].split('->'), all_Te)]
+            z = [[z_list.index(cur)] * Te for cur, Te in zip(epoch_str.split('->'), all_Te)]
             z = np.array([j for i in z for j in i])[:, None]
+            if fixation_type == 2:
+                sy['s'][:, -1] = 1 - sy['s'][:, -1]
+                sy['y'][:, -1] = 1 - sy['y'][:, -1]
             syz = np.concatenate([sy['s'], sy['y'], z], axis=-1)
             self.trials.append(torch.tensor(syz, dtype=torch.float32))
 
@@ -109,9 +169,10 @@ def set_deterministic(seed):
 
 
 def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
-                         gating_type=3, nonlin='tanh', init_scale=0.1, sig_r=0,
-                         lr=0.01, weight_decay=0, batch_size=256, num_iter=500, n_trials_ts=200,
-                         sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
+                         gating_type=3, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
+                         optim='Adam', lr=0.01, weight_decay=0,
+                         batch_size=256, num_iter=500, n_trials_ts=200,
+                         sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                          frz_io_layer=False, verbose=True, save_dir=None, retrain=True, **kwargs):
@@ -119,7 +180,7 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     rank = len(z_list) * gating_type if isinstance(gating_type, int) else len(z_list)
     model = CXTRNN(dim_z=len(z_list), rank=rank, dim_hid=dim_hid, alpha=alpha,
-                   gating_type=gating_type, nonlin=nonlin,
+                   gating_type=gating_type, share_io=share_io, nonlin=nonlin,
                    init_scale=init_scale, sig_r=sig_r).to(device)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
@@ -136,7 +197,8 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
     for itask, task in enumerate(task_list):
         multitask_dataset_ts = MultiTaskDataset(n_trials=n_trials_ts, task_list=[task], z_list=z_list,
                                                 sig_s=sig_s, p_stay=p_stay, min_Te=min_Te,
-                                                nx=nx, d_stim=d_stim)
+                                                nx=nx, d_stim=d_stim, epoch_type=epoch_type,
+                                                fixation_type=fixation_type)
         ts_data_loader = DataLoader(dataset=multitask_dataset_ts, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
@@ -145,18 +207,23 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
     U_arr = []
     V_arr = []
     for itask, task in enumerate(task_list):
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
         for iter in range(num_iter):
             multitask_dataset_tr = MultiTaskDataset(n_trials=batch_size, task_list=[task], z_list=z_list,
                                                     sig_s=sig_s, p_stay=p_stay, min_Te=min_Te,
-                                                    nx=nx, d_stim=d_stim)
+                                                    nx=nx, d_stim=d_stim, epoch_type=epoch_type,
+                                                    fixation_type=fixation_type)
             tr_data_loader = DataLoader(dataset=multitask_dataset_tr, batch_size=batch_size, collate_fn=collate_fn)
             model.train()
             if frz_io_layer:
-                for p in model.input_layer.parameters():
-                    p.requires_grad = False
-                for p in model.output_layer.parameters():
-                    p.requires_grad = False
+                model.W_in.requires_grad = False
+                model.b_in.requires_grad = False
+                model.W_out.requires_grad = False
+                model.b_out.requries_grad = False
+                # for p in model.input_layer.parameters():
+                #     p.requires_grad = False
+                # for p in model.output_layer.parameters():
+                #     p.requires_grad = False
             for ib, cur_batch in enumerate(tr_data_loader):
                 syz, lengths = cur_batch
                 syz = syz.to(device)
@@ -268,7 +335,7 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_gating3_frzio_PPAA_DMDM_minT20_sd2'
+        save_name = 'cxtrnn_seq_gating3_sigr0pt05_P_M_minT5_nx2dx2_sd2'
         config = load_config(save_name)
         config['retrain'] = False
     else:
@@ -310,8 +377,10 @@ if __name__ == '__main__':
     ######################################################
     fig, axes = plt.subplots(6, len(config['task_list']), figsize=(2 * len(config['task_list']), 6),
                              sharey=True, sharex='col')
+    if len(axes.shape) == 1:
+        axes = axes[:, None]
     for itask, task in enumerate(config['task_list']):
-        epoch_str = task_dict[task]
+        epoch_str = task_epoch(task, epoch_type=config['epoch_type'])
         x = np.random.randint(config['nx'])
         sig_y = 0
         sig_s = config['sig_s']
@@ -322,6 +391,9 @@ if __name__ == '__main__':
         all_Te = np.diff([0] + list(boundaries))
         z = [[config['z_list'].index(cur)] * Te for cur, Te in zip(epoch_str.split('->'), all_Te)]
         z = np.array([j for i in z for j in i])[:, None]
+        if config.get('fixation_type', 1) == 2:
+            sy['s'][:, -1] = 1 - sy['s'][:, -1]
+            sy['y'][:, -1] = 1 - sy['y'][:, -1]
         syz = np.concatenate([sy['s'], sy['y'], z], axis=-1)
         syz = torch.tensor(syz[:, None, :], dtype=torch.float32)
         syz = syz.to(next(model.parameters()).device)
