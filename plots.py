@@ -7,7 +7,7 @@ def plot_sy(sy, boundaries=None):
     for i in range(3):
         axes[i].plot(sy['s'][:, i], label='s')
         axes[i].plot(sy['y'][:, i], label='y')
-        axes[i].set_ylim(-0.2, 1.2)
+        axes[i].set_ylim(-1.2, 1.2)
 
         if boundaries is not None:
             for b in boundaries:

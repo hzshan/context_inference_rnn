@@ -469,7 +469,7 @@ def get_stats_for_single_trial(
             else:
                 log_likes[ix, iz, :] = \
                     multivariate_log_likelihood(
-                        obs=obs, mean=W[ix, iz][None, :obs.shape[1]], #TODO
+                        obs=obs, mean=W[ix, iz][None, :obs.shape[1]],
                         sigma=sigma)
 
     gamma, xi, p_cx, LL = forward_backward(
