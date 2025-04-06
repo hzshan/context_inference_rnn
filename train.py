@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import random
+from copy import deepcopy
 import numpy as np
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
@@ -48,10 +49,8 @@ class CXTRNN(nn.Module):
                  gating_type='nl', share_io=True, nonlin='tanh',
                  init_scale=0.1, sig_r=0, **kwargs):
         super(CXTRNN, self).__init__()
-        self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale) #todo: vary initial scale
+        self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
         self.V = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
-        # self.input_layer = nn.Linear(dim_s, dim_hid)
-        # self.output_layer = nn.Linear(dim_hid, dim_y)
         self.dim_z = dim_z
         num_io = 1 if share_io else dim_z
         self.W_in = nn.Parameter(torch.randn(num_io, dim_hid, dim_s) * init_scale)
@@ -59,7 +58,8 @@ class CXTRNN(nn.Module):
         self.W_out = nn.Parameter(torch.randn(num_io, dim_y, dim_hid) * init_scale)
         self.b_out = nn.Parameter(torch.randn(num_io, dim_y) * init_scale)
         self.activation = torch.tanh
-        self.nm_layer = nn.Linear(dim_z, rank)
+        if gating_type in ['l', 'nl']:
+            self.nm_layer = nn.Linear(dim_z, rank)
         self.alpha = alpha
         self.dim_hid = dim_hid
         self.gating_type = gating_type
@@ -168,6 +168,23 @@ def set_deterministic(seed):
     return
 
 
+def evaluate(model, task_list, ts_data_loaders, z_list, device):
+    with torch.no_grad():
+        ts_loss = []
+        for itask_ts, task_ts in enumerate(task_list):
+            cur_ts_loss = []
+            for ib, cur_batch in enumerate(ts_data_loaders[itask_ts]):
+                syz, lengths = cur_batch
+                syz = syz.to(device)
+                s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
+                z = F.one_hot(z.to(torch.int64), num_classes=len(z_list)).float()
+                out = model(s, z)
+                loss = masked_mse_loss(out, y, lengths)
+                cur_ts_loss.append(loss.item())
+            ts_loss.append(np.mean(cur_ts_loss))
+    return ts_loss
+
+
 def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                          gating_type=3, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
                          optim='Adam', lr=0.01, weight_decay=0,
@@ -175,7 +192,7 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
-                         frz_io_layer=False, verbose=True, save_dir=None, retrain=True, **kwargs):
+                         frz_io_layer=False, verbose=True, save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     rank = len(z_list) * gating_type if isinstance(gating_type, int) else len(z_list)
@@ -189,9 +206,7 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
-        U_arr = np.load(save_dir + '/U_arr.npy')
-        V_arr = np.load(save_dir + '/V_arr.npy')
-        return model, tr_loss_arr, ts_loss_arr, U_arr, V_arr
+        return model, tr_loss_arr, ts_loss_arr
 
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
@@ -202,10 +217,10 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
         ts_data_loader = DataLoader(dataset=multitask_dataset_ts, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    tr_loss_arr = []
-    ts_loss_arr = [[] for _ in task_list]
-    U_arr = []
-    V_arr = []
+    ts_loss = evaluate(model, task_list, ts_data_loaders, z_list, device)
+    tr_loss_arr = [ts_loss[0]]
+    ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
+    ckpt_list = [deepcopy(model.state_dict())]
     for itask, task in enumerate(task_list):
         optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
         for iter in range(num_iter):
@@ -220,10 +235,6 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                 model.b_in.requires_grad = False
                 model.W_out.requires_grad = False
                 model.b_out.requries_grad = False
-                # for p in model.input_layer.parameters():
-                #     p.requires_grad = False
-                # for p in model.output_layer.parameters():
-                #     p.requires_grad = False
             for ib, cur_batch in enumerate(tr_data_loader):
                 syz, lengths = cur_batch
                 syz = syz.to(device)
@@ -234,40 +245,27 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            if iter % 10 == 0:
+            if (iter + 1) % 10 == 0:
                 tr_loss_arr.append(loss.item())
                 if verbose:
-                    print(f'task {task}, iter {iter}, train loss: {loss.item():.4f}', flush=True)
+                    print(f'task {task}, iter {iter + 1}, train loss: {loss.item():.4f}', flush=True)
                 # evaluate model on all tasks
                 model.eval()
-                with torch.no_grad():
-                    for itask_ts, task_ts in enumerate(task_list):
-                        avg_ts_loss = []
-                        for ib, cur_batch in enumerate(ts_data_loaders[itask_ts]):
-                            syz, lengths = cur_batch
-                            syz = syz.to(device)
-                            s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-                            z = F.one_hot(z.to(torch.int64), num_classes=len(z_list)).float()
-                            out = model(s, z)
-                            loss = masked_mse_loss(out, y, lengths)
-                            avg_ts_loss.append(loss.item())
-                        avg_ts_loss = np.mean(avg_ts_loss)
-                        ts_loss_arr[itask_ts].append(avg_ts_loss)
-                        if verbose:
-                            print(f'test loss on task {task_ts}: {avg_ts_loss:.4f}', flush=True)
-                U_arr.append(model.U.detach().cpu().numpy())
-                V_arr.append(model.V.detach().cpu().numpy())
+                ts_loss = evaluate(model, task_list, ts_data_loaders, z_list, device)
+                for itask_ts, task_ts in enumerate(task_list):
+                    ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
+                    if verbose:
+                        print(f'test loss on task {task_ts}: {ts_loss[itask_ts]:.4f}', flush=True)
+                if save_ckpt:
+                    ckpt_list.append(deepcopy(model.state_dict()))
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
-    U_arr = np.array(U_arr)
-    V_arr = np.array(V_arr)
     if save_dir is not None:
         torch.save(model.state_dict(), save_dir + '/model.pth')
+        torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
         np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
-        np.save(save_dir + '/U_arr.npy', U_arr)
-        np.save(save_dir + '/V_arr.npy', V_arr)
-    return model, tr_loss_arr, ts_loss_arr, U_arr, V_arr
+    return model, tr_loss_arr, ts_loss_arr
 
 
 def train_rnn(model_kwargs, epochs=15, seed=0, n_trials=25600, batch_size=256, save_dir=None):
@@ -344,7 +342,7 @@ if __name__ == '__main__':
         args = parser.parse_args()
         save_name = args.save_name
         config = load_config(save_name)
-    model, tr_loss_arr, ts_loss_arr, U_arr, V_arr = train_rnn_sequential(**config)
+    model, tr_loss_arr, ts_loss_arr = train_rnn_sequential(**config)
     ####################################################
     fig, axes = plt.subplots(2, 1, figsize=(5, 6), sharex=True, sharey=True)
     axes[0].plot(tr_loss_arr, color='gray')
@@ -357,24 +355,6 @@ if __name__ == '__main__':
         fig.savefig(config['save_dir'] + '/loss.png', bbox_inches='tight')
     ####################################################
     dim_z = len(config['z_list'])
-    fig, axes = plt.subplots(dim_z, 1, figsize=(3, 1.5*dim_z), sharex=True)
-    for iz in range(dim_z):
-        z_t = torch.zeros(dim_z, device=next(model.parameters()).device)
-        z_t[iz] = 1
-        gating = model.gating(z_t.unsqueeze(0)).detach().cpu().numpy()[0]
-        plot_u = (U_arr * np.sqrt(gating)).mean((-1, -2))
-        plot_v = (V_arr * np.sqrt(gating)).mean((-1, -2))
-        axes[iz].plot(plot_u, label='mean(Uz)')
-        axes[iz].plot(plot_v, label='mean(Vz)')
-        axes[iz].set_ylabel(config['z_list'][iz])
-        axes[iz].legend(loc=(1.05, 0.25))
-        ymax = max(plot_u.max(), plot_v.max())
-        ymin = min(plot_u.min(), plot_v.min())
-        for x in range(len(config['task_list']) + 1):
-            axes[iz].plot([x * config['num_iter'] / 10] * 2, [ymin, ymax], alpha=0.2, color='gray')
-    if config['save_dir'] is not None:
-        fig.savefig(config['save_dir'] + '/weight.png', bbox_inches='tight')
-    ######################################################
     fig, axes = plt.subplots(6, len(config['task_list']), figsize=(2 * len(config['task_list']), 6),
                              sharey=True, sharex='col')
     if len(axes.shape) == 1:
