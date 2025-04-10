@@ -28,7 +28,7 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 
 def cxtrnn_config():
     config = dict(seed=0, dim_hid=50, alpha=0.5,
-                  gating_type=3, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
+                  gating_type=3, rank=None, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
                   optim='Adam', lr=0.01, weight_decay=0,
                   batch_size=256, num_iter=500, n_trials_ts=200,
                   sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
@@ -36,32 +36,38 @@ def cxtrnn_config():
                   z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                   frz_io_layer=True, verbose=True, save_dir=None, retrain=True, save_ckpt=False)
     config_ranges = {
-        # 'min_Te': [10],
-        # 'gating_type': [3, 10],
+        #################
+        # 'gating_type': [3],
+        # 'rank': [None],
+        'gating_type': ['all'],
+        'rank': [None],
+        #################
         'save_ckpt': [True],
         'alpha': [0.1],
-        # 'sig_s': [0.05],
         'sig_r': [0.05],
+        #################
         'p_stay': [None],
-        'share_io': [False],
+        # 'min_Te': [5],
+        #################
+        'share_io': [False, True],
         'frz_io_layer': [False],
         # 'share_io': [True],
         # 'frz_io_layer': [True],
-        # 'lr': [1],
-        # 'optim': ['SGD'],
+        #################
         'epoch_type': [2],
         'z_list': [['F', 'D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
+        #################
         # 'fixation_type': [2],
         # 'nx': [8],
         # 'd_stim': [2 * np.pi / 8],
         # 'dim_hid': [256], #[256, 512],
         # 'nonlin': ['softplus', 'relu'],
-        # 'frz_io_layer': [True, False],
         # 'task_list': [['PRO_M']],
         # 'task_list': [['PRO_D', 'PRO_S', 'ANTI_D', 'ANTI_S']],
         # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
-        'num_iter': [500, 1000],
+        'num_iter': [500],
         # 'lr': [1e-4],
+        # 'optim': ['SGD'],
         # 'weight_decay': [1e-7],
         'seed': [0, 1],
     }
@@ -69,6 +75,8 @@ def cxtrnn_config():
                           mode=['combinatorial', 'sequential'][0])
     save_names = []
     for config in configs:
+        if config['gating_type'] == 'all':
+            config['rank'] = len(config['z_list']) * 3
         save_name = 'cxtrnn_seq_gating' + str(config['gating_type'])
         save_name += '_frzio' if config['frz_io_layer'] else ''
         save_name += '_ioZ' if not config['share_io'] else ''

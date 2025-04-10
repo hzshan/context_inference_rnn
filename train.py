@@ -8,6 +8,8 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 from task_generation import compose_trial
+import task_model
+import task_generation
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
@@ -51,6 +53,7 @@ class CXTRNN(nn.Module):
         super(CXTRNN, self).__init__()
         self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
         self.V = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
+        self.rank = rank
         self.dim_z = dim_z
         num_io = 1 if share_io else dim_z
         self.W_in = nn.Parameter(torch.randn(num_io, dim_hid, dim_s) * init_scale)
@@ -93,6 +96,8 @@ class CXTRNN(nn.Module):
             return self.nm_layer(z_t)
         elif self.gating_type == 'nl':
             return torch.sigmoid(self.nm_layer(z_t))
+        elif self.gating_type == 'all':
+            return torch.ones(z_t.shape[0], self.rank).to(z_t.device)
         else:
             raise NotImplementedError
 
@@ -186,16 +191,17 @@ def evaluate(model, task_list, ts_data_loaders, z_list, device):
 
 
 def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
-                         gating_type=3, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
+                         gating_type=3, rank=None, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
                          optim='Adam', lr=0.01, weight_decay=0,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
-                         frz_io_layer=False, verbose=True, save_dir=None, retrain=True, save_ckpt=False, **kwargs):
+                         use_task_model=False, frz_io_layer=False, verbose=True,
+                         save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    rank = len(z_list) * gating_type if isinstance(gating_type, int) else len(z_list)
+    rank = len(z_list) * gating_type if isinstance(gating_type, int) else rank
     model = CXTRNN(dim_z=len(z_list), rank=rank, dim_hid=dim_hid, alpha=alpha,
                    gating_type=gating_type, share_io=share_io, nonlin=nonlin,
                    init_scale=init_scale, sig_r=sig_r).to(device)
@@ -221,6 +227,14 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
+    ###########################################
+    # if use_task_model:
+    #     num_epochs_each_task = [len(np.unique(task_generation.task_dict[task].split('->'))) for task in task_list]
+    #     w_fixate = task_generation.make_delay_or_fixation_epoch({}, 1, 0, 0, d_stim=d_stim)
+    #     w_fixate = np.concatenate([w_fixate['s'], w_fixate['y']], axis=1)
+    #     model = task_model.TaskModel(nc=len(task_list), nz=len(z_list), nx=nx, sigma=sig_s, d=w_fixate.shape[-1],
+    #                                  n_epochs_each_task=num_epochs_each_task, w_fixate=w_fixate)
+    ###########################################
     for itask, task in enumerate(task_list):
         optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
         for iter in range(num_iter):
