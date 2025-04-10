@@ -662,8 +662,8 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None, forward_
         # expression below is actually p(c_t, z_t, x_t, w{1:t}) and we don't 
         # have p(w{1:t}) in the denominator. So we need to normalize it manually.
         gamma = alpha + beta + _log(prior_cx[:, :, None, None])
+        gamma = gamma - logsumexp(gamma, axis=(0, 1, 2), keepdims=True)
         gamma = np.exp(gamma)
-        gamma /= gamma.sum(0).sum(0).sum(0)
     
     else:
         # in this case the normalization factor is p(w{1:T}), which we have,
@@ -680,10 +680,10 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None, forward_
 
     # using forward_only requires explicit normalization
     if forward_only:
+        xi = xi - logsumexp(xi, axis=(0, 1, 2, 3), keepdims=True)
         xi = np.exp(xi)
-        xi /= xi.sum(0).sum(0).sum(0).sum(0)
     else:
-        xi +=  - logp_obsv
+        xi = xi - logp_obsv
         xi = np.exp(xi)
     
 
