@@ -656,14 +656,35 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None, forward_
     # p(c, x | w_{1:T})
     p_cx = np.exp(logp_cx - logp_obsv)
     # p(z_t=i, c, x | w_{1:T}): shape (nc, nx, nz, nT)
-    gamma = alpha + beta + _log(prior_cx[:, :, None, None]) - logp_obsv
-    gamma = np.exp(gamma)
-    # p(z_t=i, z_{t+1}=j, c, x | w_{1:T}): shape (nc, nx, nz, nz, nT-1)
-    xi = alpha[:, :, :, None, :-1] + beta[:, :, None, :, 1:] + log_likes[:, None, :, 1:]
-    xi += _log(transition_matrix)[:, None, :, :, None]
-    xi += _log(prior_cx[:, :, None, None, None]) - logp_obsv
-    xi = np.exp(xi)
 
     if forward_only:
+        # in this case we want gamma to be p(c_t, z_t, x_t|w{1:t}), but the 
+        # expression below is actually p(c_t, z_t, x_t, w{1:t}) and we don't 
+        # have p(w{1:t}) in the denominator. So we need to normalize it manually.
+        gamma = alpha + beta + _log(prior_cx[:, :, None, None])
+        gamma = np.exp(gamma)
         gamma /= gamma.sum(0).sum(0).sum(0)
+    
+    else:
+        # in this case the normalization factor is p(w{1:T}), which we have,
+        # so we can just use the expression below.
+        gamma = alpha + beta + _log(prior_cx[:, :, None, None]) - logp_obsv
+        gamma = np.exp(gamma)
+
+
+    # p(z_t=i, z_{t+1}=j, c, x | w_{1:T}): shape (nc, nx, nz, nz, nT-1)
+    xi = alpha[:, :, :, None, :-1] + beta[:, :, None, :, 1:] +\
+          log_likes[:, None, :, 1:]
+    xi += _log(transition_matrix)[:, None, :, :, None] +\
+          _log(prior_cx[:, :, None, None, None])
+
+    # using forward_only requires explicit normalization
+    if forward_only:
+        xi = np.exp(xi)
+        xi /= xi.sum(0).sum(0).sum(0).sum(0)
+    else:
+        xi +=  - logp_obsv
+        xi = np.exp(xi)
+    
+
     return gamma, xi, p_cx, logp_obsv
