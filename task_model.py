@@ -66,7 +66,7 @@ class TaskModel:
                 w_update_threshold=1e-3)
         
     
-    def infer(self, trial, use_y=True):
+    def infer(self, trial, use_y=True, forward_only=False):
         """
         gamma: p(c, x, z_t=i| w_{1:T}): shape (nc, nx, nz, nT)
         xi: p(c, x, z_t=i, z_{t+1}=j| w_{1:T}): shape (nc, nx, nz, nz, nT-1)
@@ -80,7 +80,8 @@ class TaskModel:
             p0_z=self.p0_z,
             x_oracle=False,
             sigma=self.sigma,
-            show_y=use_y)
+            show_y=use_y,
+            forward_only=forward_only)
         return gamma, LL
 
 
@@ -416,7 +417,8 @@ def get_stats_for_single_trial(
         p0_z: np.ndarray,
         x_oracle: bool,
         sigma: float,
-        show_y=True):
+        show_y=True,
+        forward_only=False):
     """
 
     Args:
@@ -426,6 +428,8 @@ def get_stats_for_single_trial(
         p0_z: p(z_1=i): shape (nz,)
         prior_cx: p(c, x): shape (nc, nx)
         sigma: std of observation noise
+        show_y: if True, use both s and y for inference; else use only s
+        forward_only: if True, only do forward pass; else do both forward and backward pass
     
     Returns:
         gamma: p(c, x, z_t=i| w_{1:T}): shape (nc, nx, nz, nT)
@@ -473,7 +477,7 @@ def get_stats_for_single_trial(
                         sigma=sigma)
 
     gamma, xi, p_cx, LL = forward_backward(
-        p0_z, M, log_likes, prior_cx=prior_cx)
+        p0_z, M, log_likes, prior_cx=prior_cx, forward_only=forward_only)
 
     return gamma, xi, p_cx, LL
 
@@ -623,7 +627,7 @@ def viterbi(p0_z, transition_matrix, log_likes):
     return ind_, z_
 
 
-def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None):
+def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None, forward_only=False):
     nc, nz, _ = transition_matrix.shape
     nx, _, nT = log_likes.shape
     alpha = np.zeros((nc, nx, nz, nT))
@@ -634,13 +638,16 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None):
             alpha[..., it + 1] = _log(np.einsum('cxi,cij->cxj', np.exp(alpha[..., it] - m),
                                                    transition_matrix)) + m + log_likes[..., it + 1]
     beta = np.zeros((nc, nx, nz, nT))
-    beta[..., nT - 1] = 0
-    for it in range(nT - 2, -1, -1):
-        tmp = log_likes[..., it + 1] + beta[..., it + 1]
-        m = np.max(tmp, axis=-1, keepdims=True)
-        with np.errstate(divide='ignore'):
-            beta[..., it] = _log(np.einsum('cij,cxj->cxi', transition_matrix,
-                                              np.exp(tmp - m))) + m
+
+    if not forward_only:
+        beta[..., nT - 1] = 0
+        for it in range(nT - 2, -1, -1):
+            tmp = log_likes[..., it + 1] + beta[..., it + 1]
+            m = np.max(tmp, axis=-1, keepdims=True)
+            with np.errstate(divide='ignore'):
+                beta[..., it] = _log(np.einsum('cij,cxj->cxi', transition_matrix,
+                                                np.exp(tmp - m))) + m
+
     prior_cx = np.ones((nc, nx)) / (nc * nx) if prior_cx is None else prior_cx
     # logp(w_{1:T}, c, x): shape (nc, nx)
     logp_cx = logsumexp(alpha[..., -1], axis=-1) + _log(prior_cx)
@@ -656,4 +663,7 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None):
     xi += _log(transition_matrix)[:, None, :, :, None]
     xi += _log(prior_cx[:, :, None, None, None]) - logp_obsv
     xi = np.exp(xi)
+
+    if forward_only:
+        gamma /= gamma.sum(0).sum(0).sum(0)
     return gamma, xi, p_cx, logp_obsv
