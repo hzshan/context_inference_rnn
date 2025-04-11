@@ -1,15 +1,14 @@
 import os
 import torch
+import pickle
 import torch.nn as nn
 import random
 from copy import deepcopy
 import numpy as np
-import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
-from task_generation import compose_trial
-import task_model
-import task_generation
+from task_generation import compose_trial, make_delay_or_fixation_epoch
+from task_model import TaskModel
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
@@ -129,25 +128,33 @@ def masked_mse_loss(predictions, targets, lengths):
     return loss
 
 
+def generate_trial_from_epoch(epoch_str, x, z_list, sig_s, sig_y, p_stay, min_Te, d_stim, fixation_type):
+    sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
+    all_Te = np.diff([0] + list(boundaries))
+    z = [[z_list.index(cur)] * Te for cur, Te in zip(epoch_str.split('->'), all_Te)]
+    z = np.array([j for i in z for j in i])
+    onehot_z = np.zeros((len(z), len(z_list)))
+    onehot_z[np.arange(len(z)), z] = 1
+    if fixation_type == 2:
+        sy['s'][:, -1] = 1 - sy['s'][:, -1]
+        sy['y'][:, -1] = 1 - sy['y'][:, -1]
+    return np.concatenate([sy['s'], sy['y'], onehot_z], axis=-1)
+
+
 class MultiTaskDataset(Dataset):
     def __init__(self, n_trials=64, nx=2, sig_s=0.05, sig_y=0, d_stim=np.pi/2, p_stay=0.9, min_Te=5,
                  task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                  z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'], epoch_type=1, fixation_type=1):
         self.trials = []
+        self.gdth_z = []
 
         for i_trial in range(n_trials):
             task = np.random.choice(task_list)
             x = np.random.randint(nx)
             epoch_str = task_epoch(task, epoch_type=epoch_type)
-            sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
-            all_Te = np.diff([0] + list(boundaries))
-            z = [[z_list.index(cur)] * Te for cur, Te in zip(epoch_str.split('->'), all_Te)]
-            z = np.array([j for i in z for j in i])[:, None]
-            if fixation_type == 2:
-                sy['s'][:, -1] = 1 - sy['s'][:, -1]
-                sy['y'][:, -1] = 1 - sy['y'][:, -1]
-            syz = np.concatenate([sy['s'], sy['y'], z], axis=-1)
+            syz = generate_trial_from_epoch(epoch_str, x, z_list, sig_s, sig_y, p_stay, min_Te, d_stim, fixation_type)
             self.trials.append(torch.tensor(syz, dtype=torch.float32))
+            self.gdth_z.append(syz[:, 6:])
 
     def __len__(self):
         return len(self.trials)
@@ -173,7 +180,7 @@ def set_deterministic(seed):
     return
 
 
-def evaluate(model, task_list, ts_data_loaders, z_list, device):
+def evaluate(model, task_list, ts_data_loaders, device):
     with torch.no_grad():
         ts_loss = []
         for itask_ts, task_ts in enumerate(task_list):
@@ -181,13 +188,26 @@ def evaluate(model, task_list, ts_data_loaders, z_list, device):
             for ib, cur_batch in enumerate(ts_data_loaders[itask_ts]):
                 syz, lengths = cur_batch
                 syz = syz.to(device)
-                s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-                z = F.one_hot(z.to(torch.int64), num_classes=len(z_list)).float()
+                s, y, z = syz[..., :3], syz[..., 3:6], syz[..., 6:]
                 out = model(s, z)
                 loss = masked_mse_loss(out, y, lengths)
                 cur_ts_loss.append(loss.item())
             ts_loss.append(np.mean(cur_ts_loss))
     return ts_loss
+
+
+def update_inferred_z(dataset, itask, task_model, use_y=True):
+    max_error = []
+    for itrial, trial in enumerate(dataset.trials):
+        trial_ = (itask, None, {'s': trial[:, :3].numpy(), 'y': trial[:, 3:6].numpy()})
+        gamma, _ = task_model.infer(trial_, use_y=use_y, forward_only=True)
+        inferred_z = gamma.sum(axis=(0, 1)).T
+        trial[:, 6:] = torch.tensor(inferred_z)
+        ###### check error #######
+        gdth_z = dataset.gdth_z[itrial]
+        max_error.append(np.max(np.abs(dataset.trials[itrial][:, 6:].numpy() - gdth_z)))
+    max_error = np.mean(max_error)
+    return max_error
 
 
 def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
@@ -197,7 +217,7 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
-                         use_task_model=False, frz_io_layer=False, verbose=True,
+                         use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False, verbose=True,
                          save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -216,33 +236,46 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
 
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
-        multitask_dataset_ts = MultiTaskDataset(n_trials=n_trials_ts, task_list=[task], z_list=z_list,
-                                                sig_s=sig_s, p_stay=p_stay, min_Te=min_Te,
-                                                nx=nx, d_stim=d_stim, epoch_type=epoch_type,
-                                                fixation_type=fixation_type)
-        ts_data_loader = DataLoader(dataset=multitask_dataset_ts, batch_size=batch_size, collate_fn=collate_fn)
+        ts_dataset = MultiTaskDataset(n_trials=n_trials_ts, task_list=[task], z_list=z_list,
+                                      sig_s=sig_s, p_stay=p_stay, min_Te=min_Te,
+                                      nx=nx, d_stim=d_stim, epoch_type=epoch_type,
+                                      fixation_type=fixation_type)
+        ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    ts_loss = evaluate(model, task_list, ts_data_loaders, z_list, device)
+    ts_loss = evaluate(model, task_list, ts_data_loaders, device)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
     ###########################################
-    # if use_task_model:
-    #     num_epochs_each_task = [len(np.unique(task_generation.task_dict[task].split('->'))) for task in task_list]
-    #     w_fixate = task_generation.make_delay_or_fixation_epoch({}, 1, 0, 0, d_stim=d_stim)
-    #     w_fixate = np.concatenate([w_fixate['s'], w_fixate['y']], axis=1)
-    #     model = task_model.TaskModel(nc=len(task_list), nz=len(z_list), nx=nx, sigma=sig_s, d=w_fixate.shape[-1],
-    #                                  n_epochs_each_task=num_epochs_each_task, w_fixate=w_fixate)
+    if use_task_model:
+        n_epochs_each_task = [len(set(task_epoch(task, epoch_type=epoch_type).split('->'))) for task in task_list]
+        w_fixate = make_delay_or_fixation_epoch({}, 1, 0, 0, d_stim=d_stim)
+        w_fixate = np.concatenate([w_fixate['s'], w_fixate['y']], axis=1)
+        task_model = TaskModel(nc=len(task_list), nz=len(z_list), nx=nx, sigma=sig_s, d=w_fixate.shape[-1],
+                               n_epochs_each_task=n_epochs_each_task, w_fixate=w_fixate)
+        ts_err_arr = [[] for _ in range(len(task_list))]
+        task_model_ckpt_list = []
     ###########################################
     for itask, task in enumerate(task_list):
         optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
         for iter in range(num_iter):
-            multitask_dataset_tr = MultiTaskDataset(n_trials=batch_size, task_list=[task], z_list=z_list,
-                                                    sig_s=sig_s, p_stay=p_stay, min_Te=min_Te,
-                                                    nx=nx, d_stim=d_stim, epoch_type=epoch_type,
-                                                    fixation_type=fixation_type)
-            tr_data_loader = DataLoader(dataset=multitask_dataset_tr, batch_size=batch_size, collate_fn=collate_fn)
+            tr_dataset = MultiTaskDataset(n_trials=batch_size, task_list=[task], z_list=z_list,
+                                          sig_s=sig_s, p_stay=p_stay, min_Te=min_Te,
+                                          nx=nx, d_stim=d_stim, epoch_type=epoch_type,
+                                          fixation_type=fixation_type)
+            #################################################
+            if use_task_model:
+                if batch_size * (iter + 1) <= task_model_ntrials:
+                    for trial in tr_dataset.trials:
+                        trial_ = (itask, None, {'s': trial[:, :3].numpy(), 'y': trial[:, 3:6].numpy()})
+                        task_model.dynamic_initialize_W(trial_)
+                        task_model.learn_single_trial(trial_)
+                max_error = update_inferred_z(tr_dataset, itask, task_model, use_y=True)
+                if verbose and (iter in [0, 1, num_iter - 1]):
+                    print(f'task {task}, iter {iter + 1}, max inference error: {max_error:.4f}', flush=True)
+            #################################################
+            tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
             model.train()
             if frz_io_layer:
                 model.W_in.requires_grad = False
@@ -252,8 +285,7 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
             for ib, cur_batch in enumerate(tr_data_loader):
                 syz, lengths = cur_batch
                 syz = syz.to(device)
-                s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-                z = F.one_hot(z.to(torch.int64), num_classes=len(z_list)).float()
+                s, y, z = syz[..., :3], syz[..., 3:6], syz[..., 6:]
                 out = model(s, z)
                 loss = masked_mse_loss(out, y, lengths)
                 optimizer.zero_grad()
@@ -264,14 +296,25 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                 if verbose:
                     print(f'task {task}, iter {iter + 1}, train loss: {loss.item():.4f}', flush=True)
                 # evaluate model on all tasks
+                ####################################################
+                if use_task_model:
+                    for itask_ts, task_ts in enumerate(task_list):
+                        ts_dataset = ts_data_loaders[itask_ts].dataset
+                        max_error = update_inferred_z(ts_dataset, itask_ts, task_model, use_y=False)
+                        ts_err_arr[itask_ts].append(max_error)
+                        if verbose:
+                            print(f'test max inference error on task {task_ts}: {max_error:.4f}', flush=True)
+                ####################################################
                 model.eval()
-                ts_loss = evaluate(model, task_list, ts_data_loaders, z_list, device)
+                ts_loss = evaluate(model, task_list, ts_data_loaders, device)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     if verbose:
                         print(f'test loss on task {task_ts}: {ts_loss[itask_ts]:.4f}', flush=True)
                 if save_ckpt:
                     ckpt_list.append(deepcopy(model.state_dict()))
+                    task_model_ckpt_list.append(deepcopy(task_model))
+
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
     if save_dir is not None:
@@ -279,65 +322,11 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
         torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
         np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
-    return model, tr_loss_arr, ts_loss_arr
-
-
-def train_rnn(model_kwargs, epochs=15, seed=0, n_trials=25600, batch_size=256, save_dir=None):
-    set_deterministic(seed)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = CXTRNN(**model_kwargs).to(device)
-    print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.8)
-    ##################
-    dim_z = 6
-    multitask_dataset_tr = MultiTaskDataset(n_trials=n_trials)
-    multitask_dataset_ts = MultiTaskDataset(n_trials=int(n_trials / 5))
-    tr_data_loader = DataLoader(dataset=multitask_dataset_tr, batch_size=batch_size, collate_fn=collate_fn)
-    ts_data_loader = DataLoader(dataset=multitask_dataset_ts, batch_size=batch_size, collate_fn=collate_fn)
-    tr_loss_arr = []
-    ts_loss_arr = []
-    ##################
-    for epoch in range(epochs):
-        ######################
-        model.train()
-        avg_tr_loss = []
-        for ib, cur_batch in enumerate(tr_data_loader):
-            syz, lengths = cur_batch
-            syz = syz.to(device)
-            s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-            z = F.one_hot(z.to(torch.int64), num_classes=dim_z).float()
-            out = model(s, z)
-            loss = masked_mse_loss(out, y, lengths)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            avg_tr_loss.append(loss.item())
-            if ib % 10 == 0:
-                print(f'epoch {epoch}, batch {ib}, train loss: {loss.item():.4f}', flush=True)
-        tr_loss_arr.append(np.mean(avg_tr_loss))
-        scheduler.step()
-        #######################
-        model.eval()
-        with torch.no_grad():
-            avg_ts_loss = []
-            for ib, cur_batch in enumerate(ts_data_loader):
-                syz, lengths = cur_batch
-                syz = syz.to(device)
-                s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-                z = F.one_hot(z.to(torch.int64), num_classes=dim_z).float()
-                out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths)
-                avg_ts_loss.append(loss.item())
-                print(f'epoch {epoch} test, batch {ib}, test loss: {loss.item():.4f}', flush=True)
-            ts_loss_arr.append(np.mean(avg_ts_loss))
-        ########################
-    tr_loss_arr = np.array(tr_loss_arr)
-    ts_loss_arr = np.array(ts_loss_arr)
-    if save_dir is not None:
-        torch.save(model.state_dict(), save_dir + '/model.pth')
-        np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
-        np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
+        if use_task_model:
+            np.save(save_dir + '/ts_err.npy', ts_err_arr)
+            with open(save_dir + '/task_model.pkl', 'wb') as f:
+                pickle.dump(task_model, f)
+                pickle.dump(task_model_ckpt_list, f)
     return model, tr_loss_arr, ts_loss_arr
 
 
@@ -347,7 +336,7 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_gating3_sigr0pt05_P_M_minT5_nx2dx2_sd2'
+        save_name = 'cxtrnn_seq_gating3_ioZ_a0pt1_sigr0pt05_PPAA_DMDM_sigs_dur_z2_nx2dx2_sd0'
         config = load_config(save_name)
         config['retrain'] = False
     else:
@@ -377,22 +366,10 @@ if __name__ == '__main__':
         epoch_str = task_epoch(task, epoch_type=config['epoch_type'])
         x = np.random.randint(config['nx'])
         sig_y = 0
-        sig_s = config['sig_s']
-        p_stay = config['p_stay']
-        min_Te = config['min_Te']
-        d_stim = config['d_stim']
-        sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
-        all_Te = np.diff([0] + list(boundaries))
-        z = [[config['z_list'].index(cur)] * Te for cur, Te in zip(epoch_str.split('->'), all_Te)]
-        z = np.array([j for i in z for j in i])[:, None]
-        if config.get('fixation_type', 1) == 2:
-            sy['s'][:, -1] = 1 - sy['s'][:, -1]
-            sy['y'][:, -1] = 1 - sy['y'][:, -1]
-        syz = np.concatenate([sy['s'], sy['y'], z], axis=-1)
-        syz = torch.tensor(syz[:, None, :], dtype=torch.float32)
-        syz = syz.to(next(model.parameters()).device)
-        s, y, z = syz[..., :3], syz[..., 3:6], syz[..., -1]
-        z = F.one_hot(z.to(torch.int64), num_classes=dim_z).float()
+        syz = generate_trial_from_epoch(epoch_str, x, config['z_list'], config['sig_s'], sig_y,
+                                        config['p_stay'], config['min_Te'], config['d_stim'], config['fixation_type'])
+        syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
+        s, y, z = syz[..., :3], syz[..., 3:6], syz[..., 6:]
         with torch.no_grad():
             out = model(s, z)
         ########### plot #########

@@ -34,28 +34,29 @@ def cxtrnn_config():
                   sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                   task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                   z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
+                  use_task_model=False, task_model_ntrials=np.inf,
                   frz_io_layer=True, verbose=True, save_dir=None, retrain=True, save_ckpt=False)
     config_ranges = {
         #################
-        # 'gating_type': [3],
-        # 'rank': [None],
-        'gating_type': ['all'],
+        'gating_type': [3],
         'rank': [None],
+        # 'gating_type': ['all'],
+        # 'rank': [None],
         #################
         'save_ckpt': [True],
         'alpha': [0.1],
         'sig_r': [0.05],
         #################
-        'p_stay': [None],
-        # 'min_Te': [5],
+        # 'p_stay': [None],
+        'min_Te': [5],
         #################
-        'share_io': [False, True],
+        'share_io': [False],
         'frz_io_layer': [False],
         # 'share_io': [True],
         # 'frz_io_layer': [True],
         #################
-        'epoch_type': [2],
-        'z_list': [['F', 'D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
+        # 'epoch_type': [2],
+        # 'z_list': [['F', 'D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
         #################
         # 'fixation_type': [2],
         # 'nx': [8],
@@ -69,7 +70,9 @@ def cxtrnn_config():
         # 'lr': [1e-4],
         # 'optim': ['SGD'],
         # 'weight_decay': [1e-7],
-        'seed': [0, 1],
+        'use_task_model': [True],
+        'task_model_ntrials': [512],
+        'seed': [0, 1, 2],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -97,6 +100,10 @@ def cxtrnn_config():
         save_name += ('_' + str(config['optim'])) if config['optim'] != 'Adam' else ''
         save_name += ('_lr' + str(config['lr']).replace('.', 'pt')) if config['lr'] != 0.01 else ''
         save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
+        if config['use_task_model']:
+            save_name += '_tskm'
+            if np.isfinite(config['task_model_ntrials']):
+                save_name += str(config['task_model_ntrials'])
         save_name += '_sd' + str(config['seed'])
         save_names.append(save_name)
     return configs, save_names
