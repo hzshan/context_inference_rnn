@@ -212,12 +212,13 @@ def update_inferred_z(dataset, itask, task_model, use_y=True):
 
 def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
-                         optim='Adam', lr=0.01, weight_decay=0,
+                         optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
-                         use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False, verbose=True,
+                         use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False,
+                         verbose=True, ckpt_step=10,
                          save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -257,8 +258,10 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
         ts_err_arr = [[] for _ in range(len(task_list))]
         task_model_ckpt_list = []
     ###########################################
+    optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
     for itask, task in enumerate(task_list):
-        optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
+        if reset_optim:
+            optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
         for iter in range(num_iter):
             tr_dataset = MultiTaskDataset(n_trials=batch_size, task_list=[task], z_list=z_list,
                                           sig_s=sig_s, p_stay=p_stay, min_Te=min_Te,
@@ -291,7 +294,7 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            if (iter + 1) % 10 == 0:
+            if (iter + 1) % ckpt_step == 0:
                 tr_loss_arr.append(loss.item())
                 if verbose:
                     print(f'task {task}, iter {iter + 1}, train loss: {loss.item():.4f}', flush=True)
@@ -313,7 +316,8 @@ def train_rnn_sequential(seed=0, dim_hid=50, alpha=0.5,
                         print(f'test loss on task {task_ts}: {ts_loss[itask_ts]:.4f}', flush=True)
                 if save_ckpt:
                     ckpt_list.append(deepcopy(model.state_dict()))
-                    task_model_ckpt_list.append(deepcopy(task_model))
+                    if use_task_model:
+                        task_model_ckpt_list.append(deepcopy(task_model))
 
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)

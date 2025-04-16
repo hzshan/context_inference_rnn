@@ -29,13 +29,14 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 def cxtrnn_config():
     config = dict(seed=0, dim_hid=50, alpha=0.5,
                   gating_type=3, rank=None, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
-                  optim='Adam', lr=0.01, weight_decay=0,
+                  optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                   batch_size=256, num_iter=500, n_trials_ts=200,
                   sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                   task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                   z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                   use_task_model=False, task_model_ntrials=np.inf,
-                  frz_io_layer=True, verbose=True, save_dir=None, retrain=True, save_ckpt=False)
+                  frz_io_layer=True, verbose=True, ckpt_step=10,
+                  save_dir=None, retrain=True, save_ckpt=False)
     config_ranges = {
         #################
         'gating_type': [3],
@@ -43,7 +44,7 @@ def cxtrnn_config():
         # 'gating_type': ['all'],
         # 'rank': [None],
         #################
-        'save_ckpt': [True],
+        'save_ckpt': [False],
         'alpha': [0.1],
         'sig_r': [0.05],
         #################
@@ -66,13 +67,17 @@ def cxtrnn_config():
         # 'task_list': [['PRO_M']],
         # 'task_list': [['PRO_D', 'PRO_S', 'ANTI_D', 'ANTI_S']],
         # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
-        'num_iter': [500],
+        'num_iter': [30],
+        'ckpt_step': [1],
         # 'lr': [1e-4],
         # 'optim': ['SGD'],
+        'reset_optim': [True, False],
         # 'weight_decay': [1e-7],
-        'use_task_model': [True],
-        'task_model_ntrials': [512],
-        'seed': [0, 1, 2],
+        ###########################
+        # 'use_task_model': [True],
+        # 'task_model_ntrials': [512],
+        ############################
+        'seed': [2],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -98,6 +103,7 @@ def cxtrnn_config():
         save_name += '_nx' + str(config['nx']) + 'dx' + str(int(np.pi/config['d_stim']))
         save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 500 else ''
         save_name += ('_' + str(config['optim'])) if config['optim'] != 'Adam' else ''
+        save_name += '_sameopt' if not config['reset_optim'] else ''
         save_name += ('_lr' + str(config['lr']).replace('.', 'pt')) if config['lr'] != 0.01 else ''
         save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
         if config['use_task_model']:
