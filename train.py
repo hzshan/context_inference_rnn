@@ -135,8 +135,7 @@ class LeakyRNN(nn.Module):
         self.sig_r = sig_r
 
     def step(self, s_t, x_state):
-        full_state = torch.cat([s_t, self.nonlin(x_state)], dim=-1)
-        tmp = full_state @ self.W_full.T + self.b_in
+        tmp = torch.cat([s_t, self.nonlin(x_state)], dim=-1) @ self.W_full.T + self.b_in
         noise = np.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
         x_state = (1 - self.alpha) * x_state + self.alpha * (tmp + noise)
         output = self.nonlin(x_state) @ self.W_out.T + self.b_out
@@ -221,22 +220,22 @@ def set_deterministic(seed):
     return
 
 
+@torch.no_grad()
 def evaluate(model, ts_data_loaders):
     device = next(model.parameters()).device
-    with torch.no_grad():
-        ts_loss = []
-        for ts_data_loader in ts_data_loaders:
-            cur_ts_loss = []
-            dim_s = ts_data_loader.dataset.dim_s
-            dim_y = ts_data_loader.dataset.dim_y
-            for ib, cur_batch in enumerate(ts_data_loader):
-                syz, lengths = cur_batch
-                syz = syz.to(device)
-                s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-                out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths)
-                cur_ts_loss.append(loss.item())
-            ts_loss.append(np.mean(cur_ts_loss))
+    ts_loss = []
+    for ts_data_loader in ts_data_loaders:
+        cur_ts_loss = []
+        dim_s = ts_data_loader.dataset.dim_s
+        dim_y = ts_data_loader.dataset.dim_y
+        for ib, cur_batch in enumerate(ts_data_loader):
+            syz, lengths = cur_batch
+            syz = syz.to(device)
+            s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+            out = model(s, z)
+            loss = masked_mse_loss(out, y, lengths)
+            cur_ts_loss.append(loss.item())
+        ts_loss.append(np.mean(cur_ts_loss))
     return ts_loss
 
 
@@ -387,7 +386,7 @@ class AdamWithProjection(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     @torch.no_grad()
-    def step(self, closure=None, use_proj=False, proj_act=None, proj_i=None, proj_o=None, proj_r=None):
+    def step(self, closure=None, use_proj=False, proj_mtrx_dict=None, clip_norm=None):
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -421,9 +420,12 @@ class AdamWithProjection(torch.optim.Optimizer):
                 update = -lr * m_hat / (v_hat.sqrt() + eps)
                 if use_proj:
                     if self._name[p] == 'W_full':
-                        update = proj_act @ update @ proj_i
+                        update = proj_mtrx_dict['proj_act'] @ update @ proj_mtrx_dict['proj_i']
                     elif self._name[p] == 'W_out':
-                        update = proj_o @ update @ proj_r
+                        update = proj_mtrx_dict['proj_o'] @ update @ proj_mtrx_dict['proj_r']
+                if clip_norm is not None:
+                    if update.norm() > clip_norm:
+                        update = update * (clip_norm / update.norm())
                 p.add_(update)
         return loss
 
@@ -435,7 +437,8 @@ def cov_to_proj(cov, alpha):
     return P.real
 
 
-def compute_proj_matrices(model, vl_data_loader, cov_i, cov_act, cov_o, itask, alpha_cov):
+@torch.no_grad()
+def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_cov):
     device = next(model.parameters()).device
     dim_s, dim_hid, dim_y = model.dim_s, model.dim_hid, model.dim_y
     cur_batch = next(iter(vl_data_loader))
@@ -443,8 +446,8 @@ def compute_proj_matrices(model, vl_data_loader, cov_i, cov_act, cov_o, itask, a
     syz = syz.to(device)
     s, y = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)]
     seq_len, batch_size, _ = s.shape
-    x_state = torch.zeros(batch_size, dim_hid, device=s.device)  # Initialize x state
     states = []
+    x_state = torch.zeros(batch_size, dim_hid, device=s.device)  # Initialize x state
     for t in range(seq_len):
         _, x_state = model.step(s[t], x_state)
         states.append(x_state)
@@ -456,20 +459,22 @@ def compute_proj_matrices(model, vl_data_loader, cov_i, cov_act, cov_o, itask, a
     cur_cov_i = compute_covariance(full_state[mask])
     cur_cov_o = compute_covariance(y[mask])
     cur_cov_act = model.W_full @ cur_cov_i @ model.W_full.T
-    cov_i = itask / (itask + 1) * cov_i + cur_cov_i / (itask + 1)
-    cov_act = itask / (itask + 1) * cov_act + cur_cov_act / (itask + 1)
-    cov_o = itask / (itask + 1) * cov_o + cur_cov_o / (itask + 1)
+    cov_i = itask / (itask + 1) * proj_mtrx_dict['cov_i'] + cur_cov_i / (itask + 1)
+    cov_act = itask / (itask + 1) * proj_mtrx_dict['cov_act'] + cur_cov_act / (itask + 1)
+    cov_o = itask / (itask + 1) * proj_mtrx_dict['cov_o'] + cur_cov_o / (itask + 1)
     cov_r = cov_i[-dim_hid:, -dim_hid:]
     proj_act = cov_to_proj(cov_act, alpha_cov)
     proj_i = cov_to_proj(cov_i, alpha_cov)
     proj_o = cov_to_proj(cov_o, alpha_cov)
     proj_r = cov_to_proj(cov_r, alpha_cov)
-    return proj_act, proj_i, proj_o, proj_r
+    proj_mtrx_dict = dict(cov_i=cov_i, cov_act=cov_act, cov_o=cov_o,
+                          proj_act=proj_act, proj_i=proj_i, proj_o=proj_o, proj_r=proj_r)
+    return proj_mtrx_dict
 
 
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                              alpha=0.5, nonlin='tanh', init_scale=0.1, sig_r=0,
-                             reset_optim=True, use_proj=False, lr=0.01, weight_decay=0,
+                             reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                              task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
@@ -502,8 +507,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
     ###########################################
-    cov_i, cov_act, cov_o = 0, 0, 0
-    proj_act, proj_i, proj_o, proj_r = None, None, None, None
+    proj_mtrx_dict = dict(cov_i=0, cov_act=0, cov_o=0, proj_act=None, proj_i=None, proj_o=None, proj_r=None)
     ###########################################
     optimizer = AdamWithProjection(model.named_parameters(), lr=lr, weight_decay=weight_decay)
     for itask, task in enumerate(task_list):
@@ -522,8 +526,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 optimizer.zero_grad()
                 loss.backward()
                 #####################
-                optimizer.step(use_proj=(use_proj & (itask > 0)),
-                               proj_act=proj_act, proj_i=proj_i, proj_o=proj_o, proj_r=proj_r)
+                optimizer.step(use_proj=(use_proj & (itask > 0)), proj_mtrx_dict=proj_mtrx_dict, clip_norm=clip_norm)
                 #####################
             if (i_iter + 1) % ckpt_step == 0:
                 tr_loss_arr.append(loss.item())
@@ -541,8 +544,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         if use_proj:
             vl_dataset = MultiTaskDataset(n_trials=n_trials_vl, task_list=[task], **data_kwargs)
             vl_data_loader = DataLoader(dataset=vl_dataset, batch_size=n_trials_vl, collate_fn=collate_fn)
-            proj_act, proj_i, proj_o, proj_r = compute_proj_matrices(model, vl_data_loader,
-                                                                     cov_i, cov_act, cov_o, itask, alpha_cov)
+            proj_mtrx_dict = compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_cov)
         ################################################################
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)

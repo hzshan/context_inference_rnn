@@ -119,7 +119,7 @@ def cxtrnn_config():
 def leakyrnn_config():
     config = dict(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                  alpha=0.5, nonlin='tanh', init_scale=0.1, sig_r=0,
-                 reset_optim=True, use_proj=False, lr=0.01, weight_decay=0,
+                 reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
                  batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                  sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
                  task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], z_list=None,
@@ -128,12 +128,14 @@ def leakyrnn_config():
                  train_fn='train_leakyrnn_sequential')
     config_ranges = {
         # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
+        # 'dim_hid': [50, 256],
         'num_iter': [500],
         'ckpt_step': [10],
-        'reset_optim': [False],
+        'reset_optim': [True],
         'use_proj': [True, False],
-        'nonlin': ['relu', 'tanh'],
-        'weight_decay': [1e-5],
+        'nonlin': ['linear'],
+        'clip_norm': [10, 1],
+        'weight_decay': [1e-4],
         'seed': [0],
     }
     configs = vary_config(config, config_ranges,
@@ -159,6 +161,7 @@ def leakyrnn_config():
         save_name += '_sameopt' if not config['reset_optim'] else ''
         save_name += ('_lr' + str(config['lr']).replace('.', 'pt')) if config['lr'] != 0.01 else ''
         save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
+        save_name += ('_clip' + str(config['clip_norm'])) if config['clip_norm'] is not None else ''
         save_name += '_sd' + str(config['seed'])
         save_names.append(save_name)
     return configs, save_names
