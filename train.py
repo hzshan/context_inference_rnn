@@ -119,34 +119,35 @@ class CXTRNN(nn.Module):
 
 
 class LeakyRNN(nn.Module):
-    def __init__(self, dim_s=3, dim_y=3, dim_hid=50, alpha=0.5, nonlin='tanh',
+    def __init__(self, dim_i=3, dim_y=3, dim_hid=50, alpha=0.5, nonlin='tanh',
                  init_scale=0.1, sig_r=0, **kwargs):
         super(LeakyRNN, self).__init__()
-        self.W_full = nn.Parameter(torch.randn(dim_hid, dim_s + dim_hid) * init_scale)
+        self.W_full = nn.Parameter(torch.randn(dim_hid, dim_i + dim_hid) * init_scale)
         self.b_in = nn.Parameter(torch.randn(dim_hid) * init_scale)
         self.W_out = nn.Parameter(torch.randn(dim_y, dim_hid) * init_scale)
         self.b_out = nn.Parameter(torch.randn(dim_y) * init_scale)
         self.activation = torch.tanh
         self.alpha = alpha
         self.dim_hid = dim_hid
-        self.dim_s = dim_s
+        self.dim_i = dim_i
         self.dim_y = dim_y
         self.nonlin = getattr(F, nonlin) if nonlin != 'linear' else (lambda a: a)
         self.sig_r = sig_r
 
-    def step(self, s_t, x_state):
-        tmp = torch.cat([s_t, self.nonlin(x_state)], dim=-1) @ self.W_full.T + self.b_in
+    def step(self, inp, state):
+        tmp = torch.cat([inp, self.nonlin(state)], dim=-1) @ self.W_full.T + self.b_in
         noise = np.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
-        x_state = (1 - self.alpha) * x_state + self.alpha * (tmp + noise)
-        output = self.nonlin(x_state) @ self.W_out.T + self.b_out
-        return output, x_state
+        state = (1 - self.alpha) * state + self.alpha * (tmp + noise)
+        output = self.nonlin(state) @ self.W_out.T + self.b_out
+        return output, state
 
-    def forward(self, s, z=None):
-        seq_len, batch_size, _ = s.shape
-        x_state = torch.zeros(batch_size, self.dim_hid, device=s.device)  # Initialize x state
+    def forward(self, s, c):
+        inputs = torch.cat([s, c], dim=-1)
+        seq_len, batch_size, _ = inputs.shape
+        x_state = torch.zeros(batch_size, self.dim_hid, device=inputs.device)  # Initialize x state
         outputs = []
         for t in range(seq_len):
-            output, x_state = self.step(s[t], x_state)
+            output, x_state = self.step(inputs[t], x_state)
             outputs.append(output)
         outputs = torch.stack(outputs, dim=0)
         return outputs
@@ -162,37 +163,45 @@ def masked_mse_loss(predictions, targets, lengths):
     return loss
 
 
-def generate_trial_from_epoch(epoch_str, x, z_list, sig_s, sig_y, p_stay, min_Te, d_stim, fixation_type):
+def generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
+                   epoch_type, fixation_type, info_type='z', epoch_str=None):
+    if epoch_str is None:
+        epoch_str = task_epoch(task, epoch_type=epoch_type)
     sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
     if fixation_type == 2:
         sy['s'][:, -1] = 1 - sy['s'][:, -1]
         sy['y'][:, -1] = 1 - sy['y'][:, -1]
     trial = [sy['s'], sy['y']]
-    if z_list is not None:
+    if info_type == 'z':
         all_Te = np.diff([0] + list(boundaries))
         z = [[z_list.index(cur)] * Te for cur, Te in zip(epoch_str.split('->'), all_Te)]
         z = np.array([j for i in z for j in i])
         onehot_z = np.zeros((len(z), len(z_list)))
         onehot_z[np.arange(len(z)), z] = 1
         trial.append(onehot_z)
+    else:
+        c = task_list.index(task)
+        onehot_c = np.zeros((len(sy['s']), len(task_list)))
+        onehot_c[:, c] = 1
+        trial.append(onehot_c)
     trial = np.concatenate(trial, axis=-1)
     return trial
 
 
-class MultiTaskDataset(Dataset):
+class TaskDataset(Dataset):
     def __init__(self, n_trials=64, dim_s=3, dim_y=3, nx=2, sig_s=0.05, sig_y=0,
                  d_stim=np.pi / 2, p_stay=0.9, min_Te=5,
-                 task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
-                 z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'], epoch_type=1, fixation_type=1):
+                 task='PRO_D', task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
+                 z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
+                 epoch_type=1, fixation_type=1, info_type='z'):
         self.dim_s = dim_s
         self.dim_y = dim_y
         self.trials = []
         self.gdth_z = []
         for i_trial in range(n_trials):
-            task = np.random.choice(task_list)
             x = np.random.randint(nx)
-            epoch_str = task_epoch(task, epoch_type=epoch_type)
-            syz = generate_trial_from_epoch(epoch_str, x, z_list, sig_s, sig_y, p_stay, min_Te, d_stim, fixation_type)
+            syz = generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
+                                 epoch_type, fixation_type, info_type=info_type)
             self.trials.append(torch.tensor(syz, dtype=torch.float32))
             self.gdth_z.append(syz[:, (dim_s + dim_y):])
 
@@ -259,7 +268,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
                          optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                          batch_size=256, num_iter=500, n_trials_ts=200,
-                         sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
+                         sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
+                         epoch_type=1, fixation_type=1, info_type='z',
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                          use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False,
@@ -280,12 +290,12 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
         return model, tr_loss_arr, ts_loss_arr
 
-    data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=z_list,
+    data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=z_list, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
-                       epoch_type=epoch_type, fixation_type=fixation_type)
+                       epoch_type=epoch_type, fixation_type=fixation_type, info_type=info_type)
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
-        ts_dataset = MultiTaskDataset(n_trials=n_trials_ts, task_list=[task], **data_kwargs)
+        ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
@@ -308,7 +318,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
         if reset_optim:
             optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
         for iter in range(num_iter):
-            tr_dataset = MultiTaskDataset(n_trials=batch_size, task_list=[task], **data_kwargs)
+            tr_dataset = TaskDataset(n_trials=batch_size, task=task, **data_kwargs)
             #################################################
             if use_task_model:
                 if batch_size * (iter + 1) <= task_model_ntrials:
@@ -440,19 +450,21 @@ def cov_to_proj(cov, alpha):
 @torch.no_grad()
 def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_cov):
     device = next(model.parameters()).device
-    dim_s, dim_hid, dim_y = model.dim_s, model.dim_hid, model.dim_y
+    dim_hid = model.dim_hid
+    dim_s, dim_y = vl_data_loader.dataset.dim_s, vl_data_loader.dataset.dim_y
     cur_batch = next(iter(vl_data_loader))
     syz, lengths = cur_batch
     syz = syz.to(device)
-    s, y = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)]
-    seq_len, batch_size, _ = s.shape
+    s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+    sz = torch.cat([s, z], dim=-1)
+    seq_len, batch_size, _ = sz.shape
     states = []
-    x_state = torch.zeros(batch_size, dim_hid, device=s.device)  # Initialize x state
+    x_state = torch.zeros(batch_size, dim_hid, device=sz.device)  # Initialize x state
     for t in range(seq_len):
-        _, x_state = model.step(s[t], x_state)
+        _, x_state = model.step(sz[t], x_state)
         states.append(x_state)
     states = model.nonlin(torch.stack(states, dim=0))
-    full_state = torch.cat([s, states], dim=-1)
+    full_state = torch.cat([sz, states], dim=-1)
     mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
     mask = mask.to(device)
     compute_covariance = lambda x: x.T @ x / (x.shape[0] - 1)  # or use biased estimate?
@@ -476,13 +488,14 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                              alpha=0.5, nonlin='tanh', init_scale=0.1, sig_r=0,
                              reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
-                             sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2, epoch_type=1, fixation_type=1,
+                             sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
+                             epoch_type=1, fixation_type=1, info_type='c',
                              task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                              verbose=True, ckpt_step=10, alpha_cov=0.001,
                              save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = LeakyRNN(dim_hid=dim_hid, alpha=alpha, nonlin=nonlin,
+    model = LeakyRNN(dim_i=(dim_s + len(task_list)), dim_y=dim_y, dim_hid=dim_hid, alpha=alpha, nonlin=nonlin,
                      init_scale=init_scale, sig_r=sig_r).to(device)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
@@ -493,12 +506,12 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
         return model, tr_loss_arr, ts_loss_arr
 
-    data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=None,
+    data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=None, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
-                       epoch_type=epoch_type, fixation_type=fixation_type)
+                       epoch_type=epoch_type, fixation_type=fixation_type, info_type=info_type)
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
-        ts_dataset = MultiTaskDataset(n_trials=n_trials_ts, task_list=[task], **data_kwargs)
+        ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
@@ -514,14 +527,14 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         if reset_optim:
             optimizer = AdamWithProjection(model.named_parameters(), lr=lr, weight_decay=weight_decay)
         for i_iter in range(num_iter):
-            tr_dataset = MultiTaskDataset(n_trials=batch_size, task_list=[task], **data_kwargs)
+            tr_dataset = TaskDataset(n_trials=batch_size, task=task, **data_kwargs)
             tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
             model.train()
             for ib, cur_batch in enumerate(tr_data_loader):
                 syz, lengths = cur_batch
                 syz = syz.to(device)
-                s, y = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)],
-                out = model(s)
+                s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+                out = model(s, z)
                 loss = masked_mse_loss(out, y, lengths)
                 optimizer.zero_grad()
                 loss.backward()
@@ -542,7 +555,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                     ckpt_list.append(deepcopy(model.state_dict()))
         ################################################
         if use_proj:
-            vl_dataset = MultiTaskDataset(n_trials=n_trials_vl, task_list=[task], **data_kwargs)
+            vl_dataset = TaskDataset(n_trials=n_trials_vl, task=task, **data_kwargs)
             vl_data_loader = DataLoader(dataset=vl_dataset, batch_size=n_trials_vl, collate_fn=collate_fn)
             proj_mtrx_dict = compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_cov)
         ################################################################
@@ -564,7 +577,7 @@ if __name__ == '__main__':
     if platform.system() == 'Windows':
         save_name = 'leakyrnn_PPAA_DMDM_sigs_minT5_nx2dx2_nitr50_sameopt_sd0'
         config = load_config(save_name)
-        config['retrain'] = False
+        config['retrain'] = True
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument("--save_name", help="save_name", type=str, default="")
@@ -595,8 +608,9 @@ if __name__ == '__main__':
         epoch_str = task_epoch(task, epoch_type=config['epoch_type'])
         x = np.random.randint(config['nx'])
         sig_y = 0
-        syz = generate_trial_from_epoch(epoch_str, x, config['z_list'], config['sig_s'], sig_y,
-                                        config['p_stay'], config['min_Te'], config['d_stim'], config['fixation_type'])
+        syz = generate_trial(task, x, config['z_list'], config['task_list'], config['sig_s'], sig_y,
+                             config['p_stay'], config['min_Te'], config['d_stim'],
+                             config['epoch_type'], config['fixation_type'], info_type=config.get('info_type', 'z'))
         syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
         s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
         with torch.no_grad():
