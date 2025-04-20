@@ -5,8 +5,9 @@ import torch.nn as nn
 import random
 from copy import deepcopy
 import numpy as np
+import math
 from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pad_sequence
 from task_generation import compose_trial, make_delay_or_fixation_epoch
 from task_model import TaskModel
 import torch.nn.functional as F
@@ -47,18 +48,17 @@ def task_epoch(task, epoch_type=1):
 
 class CXTRNN(nn.Module):
     def __init__(self, dim_s=3, dim_y=3, dim_z=6, rank=6, dim_hid=50, alpha=0.5,
-                 gating_type='nl', share_io=True, nonlin='tanh',
-                 init_scale=0.1, sig_r=0, **kwargs):
+                 gating_type='nl', share_io=True, nonlin='tanh', sig_r=0, **kwargs):
         super(CXTRNN, self).__init__()
-        self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
-        self.V = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
+        self.U = nn.Parameter(torch.randn(dim_hid, rank) * (1 / dim_hid) ** 0.25)
+        self.V = nn.Parameter(torch.randn(dim_hid, rank) * (1 / dim_hid) ** 0.25)
         self.rank = rank
         self.dim_z = dim_z
         num_io = 1 if share_io else dim_z
-        self.W_in = nn.Parameter(torch.randn(num_io, dim_hid, dim_s) * init_scale)
-        self.b_in = nn.Parameter(torch.randn(num_io, dim_hid) * init_scale)
-        self.W_out = nn.Parameter(torch.randn(num_io, dim_y, dim_hid) * init_scale)
-        self.b_out = nn.Parameter(torch.randn(num_io, dim_y) * init_scale)
+        self.W_in = nn.Parameter(torch.randn(num_io, dim_hid, dim_s) * math.sqrt(2 / (dim_hid + dim_s)))
+        self.b_in = nn.Parameter(torch.zeros(num_io, dim_hid))
+        self.W_out = nn.Parameter(torch.randn(num_io, dim_y, dim_hid) * math.sqrt(2 / (dim_hid + dim_y)))
+        self.b_out = nn.Parameter(torch.zeros(num_io, dim_y))
         self.activation = torch.tanh
         if gating_type in ['l', 'nl']:
             self.nm_layer = nn.Linear(dim_z, rank)
@@ -119,13 +119,12 @@ class CXTRNN(nn.Module):
 
 
 class LeakyRNN(nn.Module):
-    def __init__(self, dim_i=3, dim_y=3, dim_hid=50, alpha=0.5, nonlin='tanh',
-                 init_scale=0.1, sig_r=0, **kwargs):
+    def __init__(self, dim_i=3, dim_y=3, dim_hid=50, alpha=0.5, nonlin='tanh', sig_r=0, **kwargs):
         super(LeakyRNN, self).__init__()
-        self.W_full = nn.Parameter(torch.randn(dim_hid, dim_i + dim_hid) * init_scale)
-        self.b_in = nn.Parameter(torch.randn(dim_hid) * init_scale)
-        self.W_out = nn.Parameter(torch.randn(dim_y, dim_hid) * init_scale)
-        self.b_out = nn.Parameter(torch.randn(dim_y) * init_scale)
+        self.W_full = nn.Parameter(torch.randn(dim_hid, dim_i + dim_hid) * math.sqrt(2 / (dim_i + dim_hid + dim_hid)))
+        self.b_in = nn.Parameter(torch.zeros(dim_hid))
+        self.W_out = nn.Parameter(torch.randn(dim_y, dim_hid) * math.sqrt(2 / (dim_hid + dim_y)))
+        self.b_out = nn.Parameter(torch.zeros(dim_y))
         self.activation = torch.tanh
         self.alpha = alpha
         self.dim_hid = dim_hid
@@ -153,11 +152,19 @@ class LeakyRNN(nn.Module):
         return outputs
 
 
-def masked_mse_loss(predictions, targets, lengths):
+def masked_mse_loss(predictions, targets, lengths, weighted=False):
     seq_len, batch_size, dim_y = predictions.shape
     mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
     mask = mask.to(predictions.device)
     mse_per_timestep = (predictions - targets) ** 2
+    if weighted:
+        w = 1 - targets[:, :, -1].clone()
+        w[w == 0] = 0.2
+        grace_idx = w.argmax(dim=0)[None, :] + torch.arange(5)[:, None].to(w.device)
+        grace_idx = torch.clamp(grace_idx, max=w.shape[0] - 1)
+        trial_idx = torch.arange(w.shape[1])[None, :].expand(5, -1).to(w.device)
+        w[grace_idx, trial_idx] = 0
+        mask = mask * w
     mse_per_timestep = mse_per_timestep * mask.unsqueeze(-1)
     loss = mse_per_timestep.sum() / (mask.sum().float() * dim_y)
     return loss
@@ -230,7 +237,7 @@ def set_deterministic(seed):
 
 
 @torch.no_grad()
-def evaluate(model, ts_data_loaders):
+def evaluate(model, ts_data_loaders, weighted=False):
     device = next(model.parameters()).device
     ts_loss = []
     for ts_data_loader in ts_data_loaders:
@@ -242,7 +249,7 @@ def evaluate(model, ts_data_loaders):
             syz = syz.to(device)
             s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
             out = model(s, z)
-            loss = masked_mse_loss(out, y, lengths)
+            loss = masked_mse_loss(out, y, lengths, weighted=weighted)
             cur_ts_loss.append(loss.item())
         ts_loss.append(np.mean(cur_ts_loss))
     return ts_loss
@@ -265,7 +272,8 @@ def update_inferred_z(dataset, itask, task_model, use_y=True):
 
 
 def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
-                         gating_type=3, rank=None, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
+                         gating_type=3, rank=None, share_io=True, nonlin='tanh',
+                         init_scale=0.1, sig_r=0, weighted=False,
                          optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -299,7 +307,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    ts_loss = evaluate(model, ts_data_loaders)
+    ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
@@ -343,7 +351,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
                 out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths)
+                loss = masked_mse_loss(out, y, lengths, weighted=weighted)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -362,7 +370,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                             print(f'test max inference error on task {task_ts}: {max_error:.4f}', flush=True)
                 ####################################################
                 model.eval()
-                ts_loss = evaluate(model, ts_data_loaders)
+                ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     if verbose:
@@ -442,6 +450,8 @@ class AdamWithProjection(torch.optim.Optimizer):
 
 def cov_to_proj(cov, alpha):
     D, V = torch.linalg.eig(cov)
+    print(f'{D.real.min():.4f}, {D.real.max():.4f}', flush=True)
+    print(f'{D.imag.min():.4f}, {D.imag.max():.4f}', flush=True)
     D_scaled = alpha / (alpha + D)
     P = V @ torch.diag(D_scaled) @ V.T
     return P.real
@@ -459,10 +469,10 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
     sz = torch.cat([s, z], dim=-1)
     seq_len, batch_size, _ = sz.shape
     states = []
-    x_state = torch.zeros(batch_size, dim_hid, device=sz.device)  # Initialize x state
+    state = torch.zeros(batch_size, dim_hid, device=sz.device)  # Initialize x state
     for t in range(seq_len):
-        _, x_state = model.step(sz[t], x_state)
-        states.append(x_state)
+        _, state = model.step(sz[t], state)
+        states.append(state)
     states = model.nonlin(torch.stack(states, dim=0))
     full_state = torch.cat([sz, states], dim=-1)
     mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
@@ -485,7 +495,7 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
 
 
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
-                             alpha=0.5, nonlin='tanh', init_scale=0.1, sig_r=0,
+                             alpha=0.5, nonlin='tanh', init_scale=0.1, sig_r=0, weighted=False,
                              reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -515,7 +525,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    ts_loss = evaluate(model, ts_data_loaders)
+    ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
@@ -535,7 +545,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
                 out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths)
+                loss = masked_mse_loss(out, y, lengths, weighted=weighted)
                 optimizer.zero_grad()
                 loss.backward()
                 #####################
@@ -546,7 +556,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
                 model.eval()
-                ts_loss = evaluate(model, ts_data_loaders)
+                ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     if verbose:
@@ -575,9 +585,9 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'leakyrnn_PPAA_DMDM_sigs_minT5_nx2dx2_nitr50_sameopt_sd0'
+        save_name = 'cxtrnn_seq_gating3_ioZ_a0pt1_sigr0pt05_PPAAD_DMDMM_sigs_minT5_nx2dx2_sameopt_sd0'
         config = load_config(save_name)
-        config['retrain'] = True
+        config['retrain'] = False
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument("--save_name", help="save_name", type=str, default="")

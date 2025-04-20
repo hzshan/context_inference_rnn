@@ -28,7 +28,8 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 
 def cxtrnn_config():
     config = dict(seed=0, dim_hid=50, alpha=0.5,
-                  gating_type=3, rank=None, share_io=True, nonlin='tanh', init_scale=0.1, sig_r=0,
+                  gating_type=3, rank=None, share_io=True, nonlin='tanh',
+                  init_scale=0.1, sig_r=0, weighted=False,
                   optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                   batch_size=256, num_iter=500, n_trials_ts=200,
                   sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -46,12 +47,13 @@ def cxtrnn_config():
         # 'gating_type': ['all'],
         # 'rank': [None],
         #################
-        'save_ckpt': [False],
-        'alpha': [0.1],
+        'save_ckpt': [True],
+        'alpha': [0.1, 0.2],
         'sig_r': [0.05],
+        'weighted': [True],
         #################
-        # 'p_stay': [None],
-        'min_Te': [5],
+        'p_stay': [None],
+        # 'min_Te': [5],
         #################
         'share_io': [False],
         'frz_io_layer': [False],
@@ -60,6 +62,7 @@ def cxtrnn_config():
         #################
         # 'epoch_type': [2],
         # 'z_list': [['F', 'D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
+        # 'z_list': [['F', 'D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
         #################
         # 'fixation_type': [2],
         # 'nx': [8],
@@ -69,17 +72,20 @@ def cxtrnn_config():
         # 'task_list': [['PRO_M']],
         # 'task_list': [['PRO_D', 'PRO_S', 'ANTI_D', 'ANTI_S']],
         # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
-        'num_iter': [30],
-        'ckpt_step': [1],
+        'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'DM'],
+                      ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'DM']],
+        'z_list': [['F/D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
+        # 'num_iter': [30],
+        'ckpt_step': [10],
         # 'lr': [1e-4],
         # 'optim': ['SGD'],
-        'reset_optim': [True, False],
+        'reset_optim': [False], #[True, False],
         # 'weight_decay': [1e-7],
         ###########################
         # 'use_task_model': [True],
         # 'task_model_ntrials': [512],
         ############################
-        'seed': [2],
+        'seed': [0],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -94,8 +100,8 @@ def cxtrnn_config():
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
         save_name += ('_sigr' + str(config['sig_r'])).replace('.', 'pt') if config['sig_r'] != 0 else ''
-        save_name += '_' + ''.join([cur[0] for cur in config['task_list']])
-        save_name += '_' + ''.join([cur[-1] for cur in config['task_list']])
+        save_name += '_wloss' if config['weighted'] else ''
+        save_name += '_' + ''.join([cur[0] + cur[-1].lower() for cur in config['task_list']])
         # save_name += ('_sigs' + str(config['sig_s'])).replace('.', 'pt') if config['sig_s'] != 0.05 else ''
         config['sig_s'] = np.sqrt(2 / config['alpha']) * 0.01
         save_name += '_sigs'
@@ -130,14 +136,12 @@ def leakyrnn_config():
                  train_fn='train_leakyrnn_sequential')
     config_ranges = {
         # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
-        # 'dim_hid': [50, 256],
-        'num_iter': [500],
+        # 'dim_hid': [256],
+        # 'p_stay': [None],
+        # 'num_iter': [2000],
         'ckpt_step': [10],
-        'reset_optim': [False, True],
-        'use_proj': [True, False],
-        'nonlin': ['tanh'],
-        'clip_norm': [None],
-        'weight_decay': [0],
+        'reset_optim': [True, False],
+        'use_proj': [True],
         'seed': [0],
     }
     configs = vary_config(config, config_ranges,
@@ -170,7 +174,7 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = leakyrnn_config() #cxtrnn_config()
+    configs, save_names = cxtrnn_config()
     for config, save_name in zip(configs, save_names):
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)
