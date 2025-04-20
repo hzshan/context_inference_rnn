@@ -73,7 +73,7 @@ def make_input(stim: int, fixation: int, Te: int, sig_s: float, d_stim: float,
     stim_input = make_stim_input(stim, Te, d_stim) * contrast
 
     if stim != -1:
-        stim_input += make_stim_input(stim + int(np.pi / d_stim), Te, d_stim) * other_stim_contrast
+        stim_input += make_stim_input(1 - stim, Te, d_stim) * other_stim_contrast
 
     assert fixation in [0, 1]
     fixation_input = np.random.normal(fixation, sig_s, (Te, 1))
