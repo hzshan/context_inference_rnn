@@ -30,7 +30,7 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 def cxtrnn_config():
     config = dict(seed=0, dim_hid=50, alpha=0.5,
                   gating_type=3, rank=None, share_io=True, nonlin='tanh',
-                  sig_r=0, w_fix=1, n_skip=0,
+                  sig_r=0, w_fix=1, n_skip=0, reg_act=0,
                   optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                   batch_size=256, num_iter=500, n_trials_ts=200,
                   sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -49,8 +49,9 @@ def cxtrnn_config():
         # 'rank': [None],
         #################
         'save_ckpt': [True],
-        'alpha': [0.1, 0.2],
+        'alpha': [0.1],
         'sig_r': [0.05],
+        'sig_s': [0.01],
         'w_fix': [0.2],
         'n_skip': [0],
         #################
@@ -69,19 +70,21 @@ def cxtrnn_config():
         # 'nonlin': ['softplus', 'relu'],
         ######################
         # 'task_list': [['PRO_D', 'PRO_S', 'ANTI_D', 'ANTI_S']],
-        # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
-        # 'z_list': [['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
-        'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'DM'],
-                      ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'DM']],
-        'z_list': [['F/D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
-        'epoch_type': [1, 2],
+        'task_list': [['PRO_D', 'ANTI_D', 'PRO_R', 'ANTI_R'],
+                      ['PRO_R', 'ANTI_R', 'PRO_D', 'ANTI_D']],
+        'z_list': [['F/D', 'S', 'R_P', 'R_A']],
+        # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'DM'],
+        #               ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'DM']],
+        # 'z_list': [['F/D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
+        'epoch_type': [1],
         #######################
         # 'num_iter': [30],
         'ckpt_step': [10],
         # 'lr': [1e-4],
         # 'optim': ['SGD'],
         'reset_optim': [False], #[True, False],
-        'weight_decay': [1e-6, 1e-7],
+        'weight_decay': [1e-5],
+        # 'reg_act': [1e-3, 1e-5, 1e-7],
         ###########################
         # 'use_task_model': [True],
         # 'task_model_ntrials': [512],
@@ -99,16 +102,15 @@ def cxtrnn_config():
         save_name = 'cxtrnn_seq_gating' + str(config['gating_type'])
         save_name += '_frzio' if config['frz_io_layer'] else ''
         save_name += '_ioZ' if not config['share_io'] else ''
-        save_name += ('_a' + str(config['alpha']).replace('.', 'pt')) if config['alpha'] != 0.5 else ''
+        save_name += ('_a' + str(config['alpha'])) if config['alpha'] != 0.5 else ''
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
-        save_name += ('_sigr' + str(config['sig_r'])).replace('.', 'pt') if config['sig_r'] != 0 else ''
-        save_name += ('_wfix' + str(config['w_fix']).replace('.', 'pt')) if config['w_fix'] != 1 else ''
+        save_name += ('_sigr' + str(config['sig_r'])) if config['sig_r'] != 0 else ''
+        save_name += ('_wfix' + str(config['w_fix'])) if config['w_fix'] != 1 else ''
         save_name += ('_nskip' + str(config['n_skip'])) if config['n_skip'] != 0 else ''
         save_name += '_' + ''.join([cur[0] + cur[-1].lower() for cur in config['task_list']])
-        # save_name += ('_sigs' + str(config['sig_s'])).replace('.', 'pt') if config['sig_s'] != 0.05 else ''
-        config['sig_s'] = np.sqrt(2 / config['alpha']) * 0.01
-        save_name += '_sigs'
+        save_name += '_sigs' + (str(config['sig_s']) if config['sig_s'] != 0.01 else '')
+        config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
         save_name += '_dur' if config['p_stay'] is None else ('_minT' + str(config['min_Te']))
         save_name += ('_z' + str(config['epoch_type'])) if config['epoch_type'] != 1 else ''
         save_name += ('_fix' + str(config['fixation_type'])) if config['fixation_type'] != 1 else ''
@@ -116,14 +118,15 @@ def cxtrnn_config():
         save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 500 else ''
         save_name += ('_' + str(config['optim'])) if config['optim'] != 'Adam' else ''
         save_name += '_sameopt' if not config['reset_optim'] else ''
-        save_name += ('_lr' + str(config['lr']).replace('.', 'pt')) if config['lr'] != 0.01 else ''
+        save_name += ('_lr' + str(config['lr'])) if config['lr'] != 0.01 else ''
         save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
+        save_name += ('_reg' + str(config['reg_act'])) if config['reg_act'] != 0 else ''
         if config['use_task_model']:
             save_name += '_tskm'
             if np.isfinite(config['task_model_ntrials']):
                 save_name += str(config['task_model_ntrials'])
         save_name += '_sd' + str(config['seed'])
-        save_names.append(save_name)
+        save_names.append(save_name.replace('.', 'pt'))
     return configs, save_names
 
 
@@ -154,13 +157,13 @@ def leakyrnn_config():
     for config in configs:
         save_name = 'leakyrnn'
         save_name += '_proj' if config['use_proj'] else ''
-        save_name += ('_a' + str(config['alpha']).replace('.', 'pt')) if config['alpha'] != 0.5 else ''
+        save_name += ('_a' + str(config['alpha'])) if config['alpha'] != 0.5 else ''
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
-        save_name += ('_sigr' + str(config['sig_r'])).replace('.', 'pt') if config['sig_r'] != 0 else ''
+        save_name += ('_sigr' + str(config['sig_r'])) if config['sig_r'] != 0 else ''
         save_name += '_' + ''.join([cur[0] for cur in config['task_list']])
         save_name += '_' + ''.join([cur[-1] for cur in config['task_list']])
-        # save_name += ('_sigs' + str(config['sig_s'])).replace('.', 'pt') if config['sig_s'] != 0.05 else ''
+        # save_name += ('_sigs' + str(config['sig_s'])) if config['sig_s'] != 0.05 else ''
         config['sig_s'] = np.sqrt(2 / config['alpha']) * 0.01
         save_name += '_sigs'
         save_name += '_dur' if config['p_stay'] is None else ('_minT' + str(config['min_Te']))
@@ -169,11 +172,11 @@ def leakyrnn_config():
         save_name += '_nx' + str(config['nx']) + 'dx' + str(int(np.pi/config['d_stim']))
         save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 500 else ''
         save_name += '_sameopt' if not config['reset_optim'] else ''
-        save_name += ('_lr' + str(config['lr']).replace('.', 'pt')) if config['lr'] != 0.01 else ''
+        save_name += ('_lr' + str(config['lr'])) if config['lr'] != 0.01 else ''
         save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
         save_name += ('_clip' + str(config['clip_norm'])) if config['clip_norm'] is not None else ''
         save_name += '_sd' + str(config['seed'])
-        save_names.append(save_name)
+        save_names.append(save_name.replace('.', 'pt'))
     return configs, save_names
 
 

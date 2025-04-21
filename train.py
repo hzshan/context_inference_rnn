@@ -100,12 +100,12 @@ class CXTRNN(nn.Module):
         else:
             raise NotImplementedError
 
-    def step(self, s_t, z_t, x_state):
-        tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t), self.U, self.V, self.nonlin(x_state))
+    def step(self, s_t, z_t, state):
+        tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t), self.U, self.V, self.nonlin(state))
         tmp = tmp + np.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
-        x_state = (1 - self.alpha) * x_state + self.alpha * (tmp + self.input_layer(s_t, z_t))
-        output = self.output_layer(self.nonlin(x_state), z_t)
-        return output, x_state
+        state = (1 - self.alpha) * state + self.alpha * (tmp + self.input_layer(s_t, z_t))
+        output = self.output_layer(self.nonlin(state), z_t)
+        return output, state
 
     def forward(self, s, z):
         seq_len, batch_size, _ = s.shape
@@ -117,7 +117,7 @@ class CXTRNN(nn.Module):
             outputs.append(output)
             states.append(state)
         outputs = torch.stack(outputs, dim=0)
-        states = self.nonlin(torch.stack(states, dim=0))
+        states = torch.stack(states, dim=0)
         return outputs, states
 
 
@@ -154,7 +154,7 @@ class LeakyRNN(nn.Module):
             outputs.append(output)
             states.append(state)
         outputs = torch.stack(outputs, dim=0)
-        states = self.nonlin(torch.stack(states, dim=0))
+        states = torch.stack(states, dim=0)
         return outputs, states
 
 
@@ -253,7 +253,7 @@ def evaluate(model, ts_data_loaders, loss_kwargs):
             syz = syz.to(device)
             s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
             out, states = model(s, z)
-            loss = masked_mse_loss(out, states, y, lengths, **loss_kwargs)
+            loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
             cur_ts_loss.append(loss.item())
         ts_loss.append(np.mean(cur_ts_loss))
     return ts_loss
@@ -355,7 +355,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
                 out, states = model(s, z)
-                loss = masked_mse_loss(out, states, y, lengths, **loss_kwargs)
+                loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -471,6 +471,7 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
     syz = syz.to(device)
     s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
     _, states = model(s, z)
+    states = model.nonlin(states)
     full_state = torch.cat([s, z, states], dim=-1)
     mask = torch.arange(syz.shape[0]).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
     mask = mask.to(device)
@@ -543,7 +544,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
                 out, states = model(s, z)
-                loss = masked_mse_loss(out, states, y, lengths, **loss_kwargs)
+                loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
                 loss.backward()
                 #####################
