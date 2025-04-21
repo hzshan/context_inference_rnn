@@ -74,19 +74,19 @@ def cxtrnn_config():
         'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'DM'],
                       ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'DM']],
         'z_list': [['F/D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
-        'epoch_type': [2],
+        'epoch_type': [1, 2],
         #######################
         # 'num_iter': [30],
         'ckpt_step': [10],
         # 'lr': [1e-4],
         # 'optim': ['SGD'],
         'reset_optim': [False], #[True, False],
-        # 'weight_decay': [1e-7],
+        'weight_decay': [1e-6, 1e-7],
         ###########################
         # 'use_task_model': [True],
         # 'task_model_ntrials': [512],
         ############################
-        'seed': [1, 2, 3, 4],
+        'seed': [0],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])

@@ -109,13 +109,16 @@ class CXTRNN(nn.Module):
 
     def forward(self, s, z):
         seq_len, batch_size, _ = s.shape
-        x_state = torch.zeros(batch_size, self.dim_hid, device=s.device)  # Initialize x state
         outputs = []
+        states = []
+        state = torch.zeros(batch_size, self.dim_hid, device=s.device)
         for t in range(seq_len):
-            output, x_state = self.step(s[t], z[t], x_state)
+            output, state = self.step(s[t], z[t], state)
             outputs.append(output)
+            states.append(state)
         outputs = torch.stack(outputs, dim=0)
-        return outputs
+        states = self.nonlin(torch.stack(states, dim=0))
+        return outputs, states
 
 
 class LeakyRNN(nn.Module):
@@ -143,29 +146,31 @@ class LeakyRNN(nn.Module):
     def forward(self, s, c):
         inputs = torch.cat([s, c], dim=-1)
         seq_len, batch_size, _ = inputs.shape
-        x_state = torch.zeros(batch_size, self.dim_hid, device=inputs.device)  # Initialize x state
         outputs = []
+        states = []
+        state = torch.zeros(batch_size, self.dim_hid, device=inputs.device)
         for t in range(seq_len):
-            output, x_state = self.step(inputs[t], x_state)
+            output, state = self.step(inputs[t], state)
             outputs.append(output)
+            states.append(state)
         outputs = torch.stack(outputs, dim=0)
-        return outputs
+        states = self.nonlin(torch.stack(states, dim=0))
+        return outputs, states
 
 
-def masked_mse_loss(predictions, targets, lengths, w_fix=1, n_skip=0):
+def masked_mse_loss(predictions, states, targets, lengths, w_fix=1, n_skip=0, reg_act=0):
     seq_len, batch_size, dim_y = predictions.shape
     mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
-    mask = mask.to(predictions.device)
-    mse_per_timestep = (predictions - targets) ** 2
+    mask = mask.to(predictions.device).unsqueeze(-1)
     w = 1 - targets[:, :, -1].clone()
     w[w == 0] = w_fix
     grace_idx = w.argmax(dim=0)[None, :] + torch.arange(n_skip)[:, None].to(w.device)
     grace_idx = torch.clamp(grace_idx, max=w.shape[0] - 1)
     trial_idx = torch.arange(w.shape[1])[None, :].expand(n_skip, -1).to(w.device)
     w[grace_idx, trial_idx] = 0
-    mask = mask * w
-    mse_per_timestep = mse_per_timestep * mask.unsqueeze(-1)
-    loss = mse_per_timestep.sum() / (mask.sum().float() * dim_y)
+    w_mask = mask * w.unsqueeze(-1)
+    loss = torch.sum(torch.square(predictions - targets) * w_mask) / (w_mask.sum() * dim_y)
+    loss = loss + reg_act * torch.sum(torch.square(states) * mask) / (mask.sum() * states.shape[-1])
     return loss
 
 
@@ -247,8 +252,8 @@ def evaluate(model, ts_data_loaders, loss_kwargs):
             syz, lengths = cur_batch
             syz = syz.to(device)
             s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-            out = model(s, z)
-            loss = masked_mse_loss(out, y, lengths, **loss_kwargs)
+            out, states = model(s, z)
+            loss = masked_mse_loss(out, states, y, lengths, **loss_kwargs)
             cur_ts_loss.append(loss.item())
         ts_loss.append(np.mean(cur_ts_loss))
     return ts_loss
@@ -272,7 +277,7 @@ def update_inferred_z(dataset, itask, task_model, use_y=True):
 
 def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh',
-                         sig_r=0, w_fix=1, n_skip=0,
+                         sig_r=0, w_fix=1, n_skip=0, reg_act=0,
                          optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -305,7 +310,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip)
+    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
     ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
@@ -349,8 +354,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                 syz, lengths = cur_batch
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-                out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths, **loss_kwargs)
+                out, states = model(s, z)
+                loss = masked_mse_loss(out, states, y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -465,16 +470,9 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
     syz, lengths = cur_batch
     syz = syz.to(device)
     s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-    sz = torch.cat([s, z], dim=-1)
-    seq_len, batch_size, _ = sz.shape
-    states = []
-    state = torch.zeros(batch_size, dim_hid, device=sz.device)  # Initialize x state
-    for t in range(seq_len):
-        _, state = model.step(sz[t], state)
-        states.append(state)
-    states = model.nonlin(torch.stack(states, dim=0))
-    full_state = torch.cat([sz, states], dim=-1)
-    mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
+    _, states = model(s, z)
+    full_state = torch.cat([s, z, states], dim=-1)
+    mask = torch.arange(syz.shape[0]).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
     mask = mask.to(device)
     compute_covariance = lambda x: x.T @ x / (x.shape[0] - 1)  # or use biased estimate?
     cur_cov_i = compute_covariance(full_state[mask])
@@ -494,7 +492,7 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
 
 
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
-                             alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0,
+                             alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0,
                              reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -524,7 +522,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip)
+    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
     ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
@@ -544,8 +542,8 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 syz, lengths = cur_batch
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-                out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths, **loss_kwargs)
+                out, states = model(s, z)
+                loss = masked_mse_loss(out, states, y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
                 loss.backward()
                 #####################
@@ -624,7 +622,7 @@ if __name__ == '__main__':
         syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
         s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
         with torch.no_grad():
-            out = model(s, z)
+            out, _ = model(s, z)
         ########### plot #########
         axes[0, itask].set_title(task)
         for iax in range(dim_s):
