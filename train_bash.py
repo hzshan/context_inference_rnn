@@ -1,4 +1,5 @@
 import os
+from copy import deepcopy
 import numpy as np
 from train_config import save_config, vary_config
 
@@ -29,7 +30,7 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 def cxtrnn_config():
     config = dict(seed=0, dim_hid=50, alpha=0.5,
                   gating_type=3, rank=None, share_io=True, nonlin='tanh',
-                  init_scale=0.1, sig_r=0, weighted=False,
+                  sig_r=0, w_fix=1, n_skip=0,
                   optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                   batch_size=256, num_iter=500, n_trials_ts=200,
                   sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -50,31 +51,31 @@ def cxtrnn_config():
         'save_ckpt': [True],
         'alpha': [0.1, 0.2],
         'sig_r': [0.05],
-        'weighted': [True],
+        'w_fix': [0.2],
+        'n_skip': [0],
         #################
-        'p_stay': [None],
-        # 'min_Te': [5],
+        # 'p_stay': [None],
+        'min_Te': [5],
         #################
         'share_io': [False],
         'frz_io_layer': [False],
         # 'share_io': [True],
         # 'frz_io_layer': [True],
         #################
-        # 'epoch_type': [2],
-        # 'z_list': [['F', 'D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
-        # 'z_list': [['F', 'D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
-        #################
         # 'fixation_type': [2],
         # 'nx': [8],
         # 'd_stim': [2 * np.pi / 8],
         # 'dim_hid': [256], #[256, 512],
         # 'nonlin': ['softplus', 'relu'],
-        # 'task_list': [['PRO_M']],
+        ######################
         # 'task_list': [['PRO_D', 'PRO_S', 'ANTI_D', 'ANTI_S']],
         # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
+        # 'z_list': [['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
         'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'DM'],
                       ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'DM']],
         'z_list': [['F/D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
+        'epoch_type': [2],
+        #######################
         # 'num_iter': [30],
         'ckpt_step': [10],
         # 'lr': [1e-4],
@@ -85,12 +86,14 @@ def cxtrnn_config():
         # 'use_task_model': [True],
         # 'task_model_ntrials': [512],
         ############################
-        'seed': [0],
+        'seed': [1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
     save_names = []
     for config in configs:
+        if config['epoch_type'] == 2:
+            config['z_list'] = ['F', 'D'] + config['z_list'][1:]
         if config['gating_type'] == 'all':
             config['rank'] = len(config['z_list']) * 3
         save_name = 'cxtrnn_seq_gating' + str(config['gating_type'])
@@ -100,7 +103,8 @@ def cxtrnn_config():
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
         save_name += ('_sigr' + str(config['sig_r'])).replace('.', 'pt') if config['sig_r'] != 0 else ''
-        save_name += '_wloss' if config['weighted'] else ''
+        save_name += ('_wfix' + str(config['w_fix']).replace('.', 'pt')) if config['w_fix'] != 1 else ''
+        save_name += ('_nskip' + str(config['n_skip'])) if config['n_skip'] != 0 else ''
         save_name += '_' + ''.join([cur[0] + cur[-1].lower() for cur in config['task_list']])
         # save_name += ('_sigs' + str(config['sig_s'])).replace('.', 'pt') if config['sig_s'] != 0.05 else ''
         config['sig_s'] = np.sqrt(2 / config['alpha']) * 0.01
@@ -125,7 +129,7 @@ def cxtrnn_config():
 
 def leakyrnn_config():
     config = dict(seed=0, dim_hid=50, dim_s=3, dim_y=3,
-                 alpha=0.5, nonlin='tanh', init_scale=0.1, sig_r=0,
+                 alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0,
                  reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
                  batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                  sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,

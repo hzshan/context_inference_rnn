@@ -152,19 +152,18 @@ class LeakyRNN(nn.Module):
         return outputs
 
 
-def masked_mse_loss(predictions, targets, lengths, weighted=False):
+def masked_mse_loss(predictions, targets, lengths, w_fix=1, n_skip=0):
     seq_len, batch_size, dim_y = predictions.shape
     mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
     mask = mask.to(predictions.device)
     mse_per_timestep = (predictions - targets) ** 2
-    if weighted:
-        w = 1 - targets[:, :, -1].clone()
-        w[w == 0] = 0.2
-        grace_idx = w.argmax(dim=0)[None, :] + torch.arange(5)[:, None].to(w.device)
-        grace_idx = torch.clamp(grace_idx, max=w.shape[0] - 1)
-        trial_idx = torch.arange(w.shape[1])[None, :].expand(5, -1).to(w.device)
-        w[grace_idx, trial_idx] = 0
-        mask = mask * w
+    w = 1 - targets[:, :, -1].clone()
+    w[w == 0] = w_fix
+    grace_idx = w.argmax(dim=0)[None, :] + torch.arange(n_skip)[:, None].to(w.device)
+    grace_idx = torch.clamp(grace_idx, max=w.shape[0] - 1)
+    trial_idx = torch.arange(w.shape[1])[None, :].expand(n_skip, -1).to(w.device)
+    w[grace_idx, trial_idx] = 0
+    mask = mask * w
     mse_per_timestep = mse_per_timestep * mask.unsqueeze(-1)
     loss = mse_per_timestep.sum() / (mask.sum().float() * dim_y)
     return loss
@@ -237,7 +236,7 @@ def set_deterministic(seed):
 
 
 @torch.no_grad()
-def evaluate(model, ts_data_loaders, weighted=False):
+def evaluate(model, ts_data_loaders, loss_kwargs):
     device = next(model.parameters()).device
     ts_loss = []
     for ts_data_loader in ts_data_loaders:
@@ -249,7 +248,7 @@ def evaluate(model, ts_data_loaders, weighted=False):
             syz = syz.to(device)
             s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
             out = model(s, z)
-            loss = masked_mse_loss(out, y, lengths, weighted=weighted)
+            loss = masked_mse_loss(out, y, lengths, **loss_kwargs)
             cur_ts_loss.append(loss.item())
         ts_loss.append(np.mean(cur_ts_loss))
     return ts_loss
@@ -273,7 +272,7 @@ def update_inferred_z(dataset, itask, task_model, use_y=True):
 
 def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh',
-                         init_scale=0.1, sig_r=0, weighted=False,
+                         sig_r=0, w_fix=1, n_skip=0,
                          optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -287,8 +286,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     rank = len(z_list) * gating_type if isinstance(gating_type, int) else rank
     model = CXTRNN(dim_s=dim_s, dim_y=dim_y, dim_z=len(z_list), rank=rank, dim_hid=dim_hid, alpha=alpha,
-                   gating_type=gating_type, share_io=share_io, nonlin=nonlin,
-                   init_scale=init_scale, sig_r=sig_r).to(device)
+                   gating_type=gating_type, share_io=share_io, nonlin=nonlin, sig_r=sig_r).to(device)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
@@ -307,7 +305,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
+    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip)
+    ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
@@ -351,7 +350,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
                 out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths, weighted=weighted)
+                loss = masked_mse_loss(out, y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -370,7 +369,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                             print(f'test max inference error on task {task_ts}: {max_error:.4f}', flush=True)
                 ####################################################
                 model.eval()
-                ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
+                ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     if verbose:
@@ -495,7 +494,7 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
 
 
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
-                             alpha=0.5, nonlin='tanh', init_scale=0.1, sig_r=0, weighted=False,
+                             alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0,
                              reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
@@ -505,8 +504,8 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                              save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = LeakyRNN(dim_i=(dim_s + len(task_list)), dim_y=dim_y, dim_hid=dim_hid, alpha=alpha, nonlin=nonlin,
-                     init_scale=init_scale, sig_r=sig_r).to(device)
+    model = LeakyRNN(dim_i=(dim_s + len(task_list)), dim_y=dim_y, dim_hid=dim_hid,
+                     alpha=alpha, nonlin=nonlin, sig_r=sig_r).to(device)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
@@ -525,7 +524,8 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
 
-    ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
+    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip)
+    ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
@@ -545,7 +545,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
                 out = model(s, z)
-                loss = masked_mse_loss(out, y, lengths, weighted=weighted)
+                loss = masked_mse_loss(out, y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
                 loss.backward()
                 #####################
@@ -556,7 +556,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
                 model.eval()
-                ts_loss = evaluate(model, ts_data_loaders, weighted=weighted)
+                ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     if verbose:
