@@ -48,10 +48,15 @@ def task_epoch(task, epoch_type=1):
 
 class CXTRNN(nn.Module):
     def __init__(self, dim_s=3, dim_y=3, dim_z=6, rank=6, dim_hid=50, alpha=0.5,
-                 gating_type='nl', share_io=True, nonlin='tanh', sig_r=0, **kwargs):
+                 gating_type='nl', share_io=True, nonlin='tanh', sig_r=0, init_scale=None,
+                 **kwargs):
         super(CXTRNN, self).__init__()
-        self.U = nn.Parameter(torch.randn(dim_hid, rank) * (1 / dim_hid) ** 0.25)
-        self.V = nn.Parameter(torch.randn(dim_hid, rank) * (1 / dim_hid) ** 0.25)
+        if init_scale is None:
+            init_scale = (1 / dim_hid) ** 0.25
+            if isinstance(gating_type, int):
+                init_scale /= math.sqrt(gating_type)
+        self.U = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
+        self.V = nn.Parameter(torch.randn(dim_hid, rank) * init_scale)
         self.rank = rank
         self.dim_z = dim_z
         num_io = 1 if share_io else dim_z
@@ -87,9 +92,7 @@ class CXTRNN(nn.Module):
         return out
 
     def gating(self, z_t):
-        if self.gating_type == 'o':
-            return z_t
-        elif isinstance(self.gating_type, int):
+        if isinstance(self.gating_type, int):
             return z_t.unsqueeze(-1).expand(-1, -1, self.gating_type).reshape(z_t.shape[0], -1)
         elif self.gating_type == 'l':
             return self.nm_layer(z_t)
@@ -102,7 +105,7 @@ class CXTRNN(nn.Module):
 
     def step(self, s_t, z_t, state):
         tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t), self.U, self.V, self.nonlin(state))
-        tmp = tmp + np.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
+        tmp = tmp + math.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
         state = (1 - self.alpha) * state + self.alpha * (tmp + self.input_layer(s_t, z_t))
         output = self.output_layer(self.nonlin(state), z_t)
         return output, state
@@ -124,11 +127,9 @@ class CXTRNN(nn.Module):
 class LeakyRNN(nn.Module):
     def __init__(self, dim_i=3, dim_y=3, dim_hid=50, alpha=0.5, nonlin='tanh', sig_r=0, **kwargs):
         super(LeakyRNN, self).__init__()
-        self.W_full = nn.Parameter(torch.randn(dim_hid, dim_i + dim_hid) * math.sqrt(2 / (dim_i + dim_hid + dim_hid)))
-        self.b_in = nn.Parameter(torch.zeros(dim_hid))
-        self.W_out = nn.Parameter(torch.randn(dim_y, dim_hid) * math.sqrt(2 / (dim_hid + dim_y)))
-        self.b_out = nn.Parameter(torch.zeros(dim_y))
-        self.activation = torch.tanh
+        init_scale = math.sqrt(2 / (dim_i + dim_hid + 1 + dim_hid))
+        self.Wb_in = nn.Parameter(torch.randn(dim_hid, dim_i + dim_hid + 1) * init_scale)
+        self.Wb_out = nn.Parameter(torch.randn(dim_y, dim_hid + 1) * math.sqrt(2 / (dim_hid + 1 + dim_y)))
         self.alpha = alpha
         self.dim_hid = dim_hid
         self.dim_i = dim_i
@@ -137,10 +138,13 @@ class LeakyRNN(nn.Module):
         self.sig_r = sig_r
 
     def step(self, inp, state):
-        tmp = torch.cat([inp, self.nonlin(state)], dim=-1) @ self.W_full.T + self.b_in
-        noise = np.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
+        ones = torch.ones(inp.shape[0], 1, device=inp.device)
+        inp_cat = torch.cat([inp, self.nonlin(state), ones], dim=-1)
+        tmp = inp_cat @ self.Wb_in.T
+        noise = math.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
         state = (1 - self.alpha) * state + self.alpha * (tmp + noise)
-        output = self.nonlin(state) @ self.W_out.T + self.b_out
+        hid_cat = torch.cat([self.nonlin(state), ones], dim=-1)
+        output = hid_cat @ self.Wb_out.T
         return output, state
 
     def forward(self, s, c):
@@ -178,6 +182,9 @@ def generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_s
                    epoch_type, fixation_type, info_type='z', epoch_str=None):
     if epoch_str is None:
         epoch_str = task_epoch(task, epoch_type=epoch_type)
+        if task == 'DM':
+            x = x if x in [0, 1] else np.random.randint(2)
+            d_stim = np.pi / 2
     sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
     if fixation_type == 2:
         sy['s'][:, -1] = 1 - sy['s'][:, -1]
@@ -275,10 +282,19 @@ def update_inferred_z(dataset, itask, task_model, use_y=True):
     return max_error
 
 
-def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
+def get_optimizer(model, optim, lr=0.01, weight_decay=0):
+    if optim == 'AdamGated':
+        optimizer = AdamGated(model.named_parameters(), lr=lr, weight_decay=weight_decay)
+    else:
+        optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
+    return optimizer
+
+
+def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5, init_scale=None,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh',
                          sig_r=0, w_fix=1, n_skip=0, reg_act=0,
                          optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
+                         wd_z_eps=0, lr_z_eps=0, gamma=1,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                          epoch_type=1, fixation_type=1, info_type='z',
@@ -290,7 +306,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     rank = len(z_list) * gating_type if isinstance(gating_type, int) else rank
-    model = CXTRNN(dim_s=dim_s, dim_y=dim_y, dim_z=len(z_list), rank=rank, dim_hid=dim_hid, alpha=alpha,
+    model = CXTRNN(dim_s=dim_s, dim_y=dim_y, dim_z=len(z_list), rank=rank,
+                   dim_hid=dim_hid, alpha=alpha, init_scale=init_scale,
                    gating_type=gating_type, share_io=share_io, nonlin=nonlin, sig_r=sig_r).to(device)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
@@ -325,10 +342,12 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
         ts_err_arr = [[] for _ in range(len(task_list))]
         task_model_ckpt_list = []
     ###########################################
-    optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optim_kwargs = dict(lr=lr, weight_decay=weight_decay)
+    optimizer = get_optimizer(model, optim, **optim_kwargs)
+    lr_z = lr * torch.ones(len(z_list)).to(device)
     for itask, task in enumerate(task_list):
         if reset_optim:
-            optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
+            optimizer = get_optimizer(model, optim, **optim_kwargs)
         for iter in range(num_iter):
             tr_dataset = TaskDataset(n_trials=batch_size, task=task, **data_kwargs)
             #################################################
@@ -358,7 +377,14 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
                 loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
                 loss.backward()
-                optimizer.step()
+                if optim == 'AdamGated':
+                    wd_prob_z = (z.sum((0, 1)) / lengths.sum() >= wd_z_eps).float()
+                    optimizer.step(wd_prob_z=wd_prob_z, gating_type=gating_type, lr_z=lr_z)
+                else:
+                    optimizer.step()
+            if iter == num_iter - 1:
+                lr_prob_z = torch.tensor(np.concatenate(tr_dataset.gdth_z, axis=0).mean(0) >= lr_z_eps).float()
+                lr_z = lr_z * gamma ** lr_prob_z.to(device)
             if (iter + 1) % ckpt_step == 0:
                 tr_loss_arr.append(loss.item())
                 if verbose:
@@ -399,7 +425,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5,
     return model, tr_loss_arr, ts_loss_arr
 
 
-class AdamWithProjection(torch.optim.Optimizer):
+class AdamGated(torch.optim.Optimizer):
     def __init__(self, named_params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
         named_params = list(named_params)
         params = [p for _, p in named_params]
@@ -408,7 +434,7 @@ class AdamWithProjection(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     @torch.no_grad()
-    def step(self, closure=None, use_proj=False, proj_mtrx_dict=None, clip_norm=None):
+    def step(self, closure=None, wd_prob_z=None, gating_type=None, lr_z=None):
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -421,7 +447,69 @@ class AdamWithProjection(torch.optim.Optimizer):
                 if p.grad is None:
                     continue
                 grad = p.grad
-                # ===== weight‑decay =====
+                # ===== weight decay =====
+                if wd != 0:
+                    if wd_prob_z is None:
+                        grad = grad.add(p, alpha=wd)
+                    else:
+                        if self._name[p] in ['W_in', 'b_in', 'W_out', 'b_out'] and p.shape[0] == len(wd_prob_z):
+                            grad = grad + wd * p * wd_prob_z.view(-1, *[1] * (p.ndim - 1))
+                        elif self._name[p] in ['U', 'V'] and isinstance(gating_type, int):
+                            grad = grad + wd * p * wd_prob_z[:, None].expand(-1, gating_type).flatten()
+                        else:
+                            grad = grad.add(p, alpha=wd)
+                # ===== state & moments =====
+                state = self.state[p]
+                if len(state) == 0:
+                    state["step"] = torch.zeros((), dtype=torch.int64)
+                    state["exp_avg"] = torch.zeros_like(p)
+                    state["exp_avg_sq"] = torch.zeros_like(p)
+                state["step"] += 1
+                t = state["step"].item()
+                m, v = state["exp_avg"], state["exp_avg_sq"]
+                m.mul_(beta1).add_(grad, alpha=1 - beta1)
+                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                bias_c1 = 1 - beta1 ** t
+                bias_c2 = 1 - beta2 ** t
+                m_hat = m / bias_c1
+                v_hat = v / bias_c2
+                update = - m_hat / (v_hat.sqrt() + eps)
+                if lr_z is None:
+                    update = lr * update
+                else:
+                    if self._name[p] in ['W_in', 'b_in', 'W_out', 'b_out'] and p.shape[0] == len(lr_z):
+                        update = update * lr_z.view(-1, *[1] * (update.ndim - 1))
+                    elif self._name[p] in ['U', 'V'] and isinstance(gating_type, int):
+                        update = update * lr_z[:, None].expand(-1, gating_type).flatten()
+                    else:
+                        update = lr * update
+                p.add_(update)
+        return loss
+
+
+class AdamWithProj(torch.optim.Optimizer):
+    def __init__(self, named_params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
+        named_params = list(named_params)
+        params = [p for _, p in named_params]
+        self._name = {p: n for n, p in named_params}
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None, use_proj=False, proj_mtrx_dict=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        for group in self.param_groups:
+            lr, eps = group["lr"], group["eps"]
+            beta1, beta2 = group["betas"]
+            wd = group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad
+                # ===== weight decay =====
                 if wd != 0:
                     grad = grad.add(p, alpha=wd)
                 # ===== state & moments =====
@@ -441,13 +529,58 @@ class AdamWithProjection(torch.optim.Optimizer):
                 v_hat = v / bias_c2
                 update = -lr * m_hat / (v_hat.sqrt() + eps)
                 if use_proj:
-                    if self._name[p] == 'W_full':
-                        update = proj_mtrx_dict['proj_act'] @ update @ proj_mtrx_dict['proj_i']
-                    elif self._name[p] == 'W_out':
-                        update = proj_mtrx_dict['proj_o'] @ update @ proj_mtrx_dict['proj_r']
-                if clip_norm is not None:
-                    if update.norm() > clip_norm:
-                        update = update * (clip_norm / update.norm())
+                    pname = self._name[p]
+                    if pname == 'Wb_in':
+                        update = proj_mtrx_dict['proj_2'] @ update @ proj_mtrx_dict['proj_1']
+                    elif pname == 'Wb_out':
+                        update = proj_mtrx_dict['proj_4'] @ update @ proj_mtrx_dict['proj_3']
+                p.add_(update)
+        return loss
+
+
+class SGDWithProj(torch.optim.Optimizer):
+    def __init__(self, named_params, lr=1e-3, momentum=0.0, weight_decay=0.0):
+        named_params = list(named_params)
+        params = [p for _, p in named_params]
+        self._name = {p: n for n, p in named_params}
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None, use_proj=False, proj_mtrx_dict=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            wd = group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad
+                # ===== weight decay =====
+                if wd != 0:
+                    grad = grad.add(p, alpha=wd)
+                # ===== momentum =====
+                state = self.state[p]
+                if momentum != 0:
+                    if "momentum_buffer" not in state:
+                        buf = state["momentum_buffer"] = torch.clone(grad).detach()
+                    else:
+                        buf = state["momentum_buffer"]
+                        buf.mul_(momentum).add_(grad)
+                    update = -lr * buf
+                else:
+                    update = -lr * grad
+                # ===== projection (if enabled) =====
+                if use_proj:
+                    pname = self._name[p]
+                    if pname == 'Wb_in':
+                        update = proj_mtrx_dict['proj_2'] @ update @ proj_mtrx_dict['proj_1']
+                    elif pname == 'Wb_out':
+                        update = proj_mtrx_dict['proj_4'] @ update @ proj_mtrx_dict['proj_3']
                 p.add_(update)
         return loss
 
@@ -469,32 +602,32 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
     cur_batch = next(iter(vl_data_loader))
     syz, lengths = cur_batch
     syz = syz.to(device)
-    s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-    _, states = model(s, z)
-    states = model.nonlin(states)
-    full_state = torch.cat([s, z, states], dim=-1)
     mask = torch.arange(syz.shape[0]).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
     mask = mask.to(device)
+    s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+    _, states = model(s, z)
+    ones = torch.ones(s.shape[0], s.shape[1], 1, device=s.device)
+    vec_1 = torch.cat([s, z, model.nonlin(states), ones], dim=-1)
     compute_covariance = lambda x: x.T @ x / (x.shape[0] - 1)  # or use biased estimate?
-    cur_cov_i = compute_covariance(full_state[mask])
-    cur_cov_o = compute_covariance(y[mask])
-    cur_cov_act = model.W_full @ cur_cov_i @ model.W_full.T
-    cov_i = itask / (itask + 1) * proj_mtrx_dict['cov_i'] + cur_cov_i / (itask + 1)
-    cov_act = itask / (itask + 1) * proj_mtrx_dict['cov_act'] + cur_cov_act / (itask + 1)
-    cov_o = itask / (itask + 1) * proj_mtrx_dict['cov_o'] + cur_cov_o / (itask + 1)
-    cov_r = cov_i[-dim_hid:, -dim_hid:]
-    proj_act = cov_to_proj(cov_act, alpha_cov)
-    proj_i = cov_to_proj(cov_i, alpha_cov)
-    proj_o = cov_to_proj(cov_o, alpha_cov)
-    proj_r = cov_to_proj(cov_r, alpha_cov)
-    proj_mtrx_dict = dict(cov_i=cov_i, cov_act=cov_act, cov_o=cov_o,
-                          proj_act=proj_act, proj_i=proj_i, proj_o=proj_o, proj_r=proj_r)
+    cur_cov_1 = compute_covariance(vec_1[mask])
+    cur_cov_2 = compute_covariance(states[mask])
+    cur_cov_4 = compute_covariance(y[mask])
+    cov_1 = itask / (itask + 1) * proj_mtrx_dict['cov_1'] + cur_cov_1 / (itask + 1)
+    cov_2 = itask / (itask + 1) * proj_mtrx_dict['cov_2'] + cur_cov_2 / (itask + 1)
+    cov_3 = cov_1[-(dim_hid + 1):, -(dim_hid + 1):]
+    cov_4 = itask / (itask + 1) * proj_mtrx_dict['cov_4'] + cur_cov_4 / (itask + 1)
+    proj_1 = cov_to_proj(cov_1, alpha_cov)
+    proj_2 = cov_to_proj(cov_2, alpha_cov)
+    proj_3 = cov_to_proj(cov_3, alpha_cov)
+    proj_4 = cov_to_proj(cov_4, alpha_cov)
+    proj_mtrx_dict = dict(cov_1=cov_1, cov_2=cov_2, cov_3=cov_3, cov_4=cov_4,
+                          proj_1=proj_1, proj_2=proj_2, proj_3=proj_3, proj_4=proj_4)
     return proj_mtrx_dict
 
 
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                              alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0,
-                             reset_optim=True, use_proj=False, lr=0.01, weight_decay=0, clip_norm=None,
+                             optim='AdamWithProj', reset_optim=True, use_proj=False, lr=0.01, weight_decay=0,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                              epoch_type=1, fixation_type=1, info_type='c',
@@ -529,12 +662,12 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
     ###########################################
-    proj_mtrx_dict = dict(cov_i=0, cov_act=0, cov_o=0, proj_act=None, proj_i=None, proj_o=None, proj_r=None)
+    proj_mtrx_dict = dict(cov_1=0, cov_2=0, cov_3=0, cov_4=0, proj_1=None, proj_2=None, proj_3=None, proj_4=None)
     ###########################################
-    optimizer = AdamWithProjection(model.named_parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = eval(optim)(model.named_parameters(), lr=lr, weight_decay=weight_decay)
     for itask, task in enumerate(task_list):
         if reset_optim:
-            optimizer = AdamWithProjection(model.named_parameters(), lr=lr, weight_decay=weight_decay)
+            optimizer = eval(optim)(model.named_parameters(), lr=lr, weight_decay=weight_decay)
         for i_iter in range(num_iter):
             tr_dataset = TaskDataset(n_trials=batch_size, task=task, **data_kwargs)
             tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
@@ -548,7 +681,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 optimizer.zero_grad()
                 loss.backward()
                 #####################
-                optimizer.step(use_proj=(use_proj & (itask > 0)), proj_mtrx_dict=proj_mtrx_dict, clip_norm=clip_norm)
+                optimizer.step(use_proj=(use_proj & (itask > 0)), proj_mtrx_dict=proj_mtrx_dict)
                 #####################
             if (i_iter + 1) % ckpt_step == 0:
                 tr_loss_arr.append(loss.item())
@@ -584,7 +717,7 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_gating3_ioZ_a0pt1_sigr0pt05_PPAAD_DMDMM_sigs_minT5_nx2dx2_sameopt_sd0'
+        save_name = 'cxtrnn_seq_gating3_ioZ_a0pt1_nh256_sigr0pt05_PdAdPmAmDm_sigs_minT5_nx8dx4_nitr1000_sameopt_lr0pt001_sd0'
         config = load_config(save_name)
         config['retrain'] = False
     else:
@@ -603,6 +736,8 @@ if __name__ == '__main__':
     axes[1].legend()
     axes[0].set_ylabel('training loss')
     axes[1].set_ylabel('test loss')
+    axes[1].set_ylim([-0.05, 0.5])
+    axes[1].legend(loc='center left', bbox_to_anchor=(1, 0.5))
     if config['save_dir'] is not None:
         fig.savefig(config['save_dir'] + '/loss.png', bbox_inches='tight')
     ####################################################
