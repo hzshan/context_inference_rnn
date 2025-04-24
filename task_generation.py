@@ -479,10 +479,16 @@ def generate_trials(task_list: list,
                     sigma: float,
                     p_stay: float,
                     min_Te: int,
-                    d_stim=np.pi/2,
+                    d_stim=None,
                     trial_order='interleaved'):
     
     #TODO: add options to change ordering of trials
+
+    if d_stim is None:
+        if nx == 2:
+            d_stim = np.pi / 2
+        else:
+            d_stim = 2 * np.pi / nx
 
     nc = len(task_list)
     epoch_list = []
@@ -499,6 +505,7 @@ def generate_trials(task_list: list,
         task_ids = np.repeat(np.arange(nc), n_trials_per_task)
 
     trials = []
+    
     for itrial in range(n_trials):
         c = task_ids[itrial]
         x = itrial % nx
@@ -512,7 +519,13 @@ def generate_trials(task_list: list,
     return trials, epoch_list
 
 
-def get_ground_truth(task_list, epoch_list, p_stay, nx, d_stim=np.pi/2, eps=1e-10):
+def get_ground_truth(task_list, epoch_list, p_stay, nx, d_stim=None, eps=1e-10):
+
+    if d_stim is None:
+        if nx == 2:
+            d_stim = np.pi / 2
+        else:
+            d_stim = 2 * np.pi / nx
 
     true_M = np.zeros((len(task_list), len(epoch_list), len(epoch_list)))
     for itask, task_type in enumerate(task_list):
