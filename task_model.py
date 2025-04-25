@@ -44,7 +44,7 @@ class TaskModel:
             familiar_cx=self.familiar_cx,
             familiar_xz=self.familiar_xz,
             w_fixate=self.w_fixate,
-            match_criterion=0.5)
+            match_criterion=0.3)
         
     
     def learn_single_trial(self, trial, lr=0.1, suff_stats_discount=0.99, iters_per_trial=10):
