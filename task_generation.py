@@ -27,7 +27,7 @@ task_dict = {
 def make_stim_input(stim, Te: int, d_stim: float):
     """
     Produce a Te x 2 matrix of noisy inputs for a given stimulus.
-    if stim = None, return zero-mean random noise
+    if stim = None, return all zeros
 
     Args:
         stim: int in [0, 1, 2, ...] or None
@@ -76,7 +76,7 @@ def make_input(stim, fixation: int, Te: int, sig_s: float, d_stim: float,
     #     stim_input += make_stim_input(1 - stim, Te, d_stim) * other_stim_contrast
 
     assert fixation in [0, 1]
-    fixation_input = np.random.normal(fixation, sig_s, (Te, 1))
+    fixation_input = np.ones((Te, 1)) * fixation
 
     mean_input = np.hstack([stim_input, fixation_input])
     return np.random.normal(mean_input, sig_s)
@@ -310,7 +310,7 @@ def compose_trial(seq_of_epochs: str,
     Generates a trial composed of a sequence of epochs.
 
     seq_of_epochs: a sequence of epoch symbols separated by '->'
-    x: the task variable (0 or 1)
+    x: the task variable [0, 1, 2, ...]
     sig_s: noise standard deviation for input
     sig_y: noise standard deviation for target output
     p_stay: probability of staying in the current epoch at each timestep
