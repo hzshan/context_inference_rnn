@@ -24,22 +24,22 @@ task_dict = {
 }
 
 
-def make_stim_input(stim: int, Te: int, d_stim: float):
+def make_stim_input(stim, Te: int, d_stim: float):
     """
     Produce a Te x 2 matrix of noisy inputs for a given stimulus.
-    if stim = -1, return zero-mean random noise
+    if stim = None, return zero-mean random noise
 
     Args:
-        stim: int in [-1, 0, 1, 2, ...]
+        stim: int in [0, 1, 2, ...] or None
         duration: number of time steps
         d_stim: if stim >= 0, angle = d_stim * stim
     Returns:
         mean_stim: Te x 2 matrix of noisy inputs
 
     """
-    # assert stim in [-1, 0, 1]
 
-    if stim == -1:
+
+    if stim is None:
         return np.zeros((Te, 2))
     else:
         angle = d_stim * stim
@@ -47,7 +47,7 @@ def make_stim_input(stim: int, Te: int, d_stim: float):
         return mean_stim
 
 
-def make_input(stim: int, fixation: int, Te: int, sig_s: float, d_stim: float,
+def make_input(stim, fixation: int, Te: int, sig_s: float, d_stim: float,
                contrast=1, other_stim_contrast=0):
     """
     Generates the input (s) for a given epoch. Assuming a single modality.
@@ -58,7 +58,7 @@ def make_input(stim: int, fixation: int, Te: int, sig_s: float, d_stim: float,
     last column is the fixation cue.
 
     Args:
-        stim: int in [-1, 0, 1]. -1 means no stimulus presentation
+        stim: int in [0, 1, 2, ...] or None
         fixation: int in [0, 1]
         Te: number of time steps
         sig_s: noise standard deviation for input
@@ -68,12 +68,12 @@ def make_input(stim: int, fixation: int, Te: int, sig_s: float, d_stim: float,
     Returns:
         mean_input: Te x 3 matrix of noisy inputs
     """
-    # assert stim in [-1, 0, 1]
 
     stim_input = make_stim_input(stim, Te, d_stim) * contrast
 
-    if stim != -1:
-        stim_input += make_stim_input(1 - stim, Te, d_stim) * other_stim_contrast
+    # TO FIX
+    # if stim != -1:
+    #     stim_input += make_stim_input(1 - stim, Te, d_stim) * other_stim_contrast
 
     assert fixation in [0, 1]
     fixation_input = np.random.normal(fixation, sig_s, (Te, 1))
@@ -92,8 +92,6 @@ def make_input(stim: int, fixation: int, Te: int, sig_s: float, d_stim: float,
 #     the second two columns are the inputs for the second stimulus, and the
 #     last column is the fixation cue.
 #     """
-#     assert mod1_stim in [-1, 0, 1]
-#     assert mod2_stim in [-1, 0, 1]
 
 #     mod1_stim_input = make_stim_input(mod1_stim, Te)
 #     mod2_stim_input = make_stim_input(mod2_stim, Te)
@@ -112,12 +110,12 @@ def make_input(stim: int, fixation: int, Te: int, sig_s: float, d_stim: float,
 #     return np.random.normal(mean_input, sig_s)
 
 
-def make_target_output(response: int, fixation: int, Te: int, sig_y: float, d_stim: float):
+def make_target_output(response, fixation: int, Te: int, sig_y: float, d_stim: float):
     """
     Generates the target output (y) for a given epoch.
 
     Args:
-        response: int in [-1, 0, 1]. -1 means no response
+        response: int in [0, 1, 2, ...] or None
         fixation: int in [0, 1]
         Te: number of time steps
         sig_y: noise standard deviation for target output
@@ -137,12 +135,12 @@ def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=-1, # no stimulus presentation
+    return {'s':make_input(stim=None, # no stimulus presentation
                            fixation=1,
                            Te=Te,
                            sig_s=sig_s,
                            d_stim=d_stim),
-            'y':make_target_output(response=-1,  # no stimulus response
+            'y':make_target_output(response=None,  # no stimulus response
                                    fixation=1,
                                    Te=Te,
                                    sig_y=sig_y,
@@ -155,7 +153,7 @@ def make_response_from_memory_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: f
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=-1, # no stimulus presentation
+    return {'s':make_input(stim=None, # no stimulus presentation
                            fixation=0,
                            Te=Te,
                            sig_s=sig_s,
@@ -173,7 +171,7 @@ def make_response_from_memory_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: 
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=-1, # no stimulus presentation
+    return {'s':make_input(stim=None, # no stimulus presentation
                            fixation=0,
                            Te=Te,
                            sig_s=sig_s,
@@ -232,7 +230,7 @@ def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float)
     return {'s':make_input(x['theta_task'],
                            fixation=1, Te=Te,
                            sig_s=sig_s, d_stim=d_stim),
-            'y':make_target_output(response=-1,
+            'y':make_target_output(response=None,
                                    fixation=1,
                                    Te=Te,
                                    sig_y=sig_y, d_stim=d_stim)}
@@ -247,7 +245,7 @@ def make_superimposed_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim
     return {'s':make_input(stim=x['theta_task'],
                            fixation=1, Te=Te,
                            sig_s=sig_s, d_stim=d_stim, other_stim_contrast=0.5),
-            'y':make_target_output(response=-1,
+            'y':make_target_output(response=None,
                                   fixation=1,
                                   Te=Te,
                                   sig_y=sig_y, d_stim=d_stim)}
@@ -263,7 +261,7 @@ def make_both_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float)
                           fixation=1, Te=Te,
                           sig_s=sig_s, d_stim=d_stim,
                           other_stim_contrast=1),
-            'y':make_target_output(response=-1,
+            'y':make_target_output(response=None,
                                   fixation=1,
                                   Te=Te,
                                   sig_y=sig_y, d_stim=d_stim)}
