@@ -82,32 +82,26 @@ def make_input(stim, fixation: int, Te: int, sig_s: float, d_stim: float,
     return np.random.normal(mean_input, sig_s)
 
 
-# def make_bimodal_input(mod1_stim: int, mod2_stim: int,
-#                        fixation: int, Te: int, sig_s: float, superimpose=False):
-#     """
-#     Generates the input (s) for a given epoch.
+def make_bimodal_input(stim, fixation: int, Te: int, sig_s: float,
+                       d_stim: float, contrast=1,
+                       second_stim=None, second_stim_contrast=0.):
+    """
+    Generates the input (s) for a given epoch.
 
-#     Produces a Te x 3 matrix of noisy inputs for a given stimulus pair and
-#     fixation cue. The first two columns are the inputs for the first stimulus,
-#     the second two columns are the inputs for the second stimulus, and the
-#     last column is the fixation cue.
-#     """
+    Produces a Te x 5 matrix of noisy inputs for a given stimulus pair and
+    fixation cue. The first two columns code the first stimulus,
+    the second two columns code the second stimulus, and the
+    last column is the fixation cue.
+    """
 
-#     mod1_stim_input = make_stim_input(mod1_stim, Te)
-#     mod2_stim_input = make_stim_input(mod2_stim, Te)
+    stim_input = make_stim_input(stim, Te, d_stim) * contrast
+    second_stim_input = make_stim_input(second_stim, Te, d_stim) * second_stim_contrast
 
-#     if superimpose:
-#         # in each modality, superimpose the stimulus with the opposite one
-#         if mod1_stim != -1:
-#             mod1_stim_input += make_stim_input(1 - mod1_stim, Te) * 0.5
-#         elif mod2_stim != -1:
-#             mod2_stim_input += make_stim_input(1 - mod2_stim, Te) * 0.5
+    assert fixation in [0, 1]
+    fixation_input = np.ones((Te, 1)) * fixation
 
-#     assert fixation in [0, 1]
-#     fixation_input = np.random.normal(fixation, sig_s, (Te, 1))
-
-#     mean_input = np.hstack([mod1_stim_input, mod2_stim_input, fixation_input]).T
-#     return np.random.normal(mean_input, sig_s)
+    mean_input = np.hstack([stim_input, second_stim_input, fixation_input])
+    return np.random.normal(mean_input, sig_s)
 
 
 def make_target_output(response, fixation: int, Te: int, sig_y: float, d_stim: float):
@@ -135,7 +129,7 @@ def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=None, # no stimulus presentation
+    return {'s':make_bimodal_input(stim=None, # no stimulus presentation
                            fixation=1,
                            Te=Te,
                            sig_s=sig_s,
@@ -153,7 +147,7 @@ def make_response_from_memory_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: f
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=None, # no stimulus presentation
+    return {'s':make_bimodal_input(stim=None, # no stimulus presentation
                            fixation=0,
                            Te=Te,
                            sig_s=sig_s,
@@ -171,7 +165,7 @@ def make_response_from_memory_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: 
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=None, # no stimulus presentation
+    return {'s':make_bimodal_input(stim=None, # no stimulus presentation
                            fixation=0,
                            Te=Te,
                            sig_s=sig_s,
@@ -189,7 +183,7 @@ def make_response_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=x['theta_task'], # no stimulus presentation
+    return {'s':make_bimodal_input(stim=x['theta_task'], # no stimulus presentation
                            fixation=0,
                            Te=Te,
                            sig_s=sig_s,
@@ -207,7 +201,7 @@ def make_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_sti
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=x['theta_task'],
+    return {'s':make_bimodal_input(stim=x['theta_task'],
                            fixation=0,
                            Te=Te,
                            sig_s=sig_s,
@@ -227,7 +221,7 @@ def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float)
 
     # randomly choose a modality to present the stimulus
 
-    return {'s':make_input(x['theta_task'],
+    return {'s':make_bimodal_input(x['theta_task'],
                            fixation=1, Te=Te,
                            sig_s=sig_s, d_stim=d_stim),
             'y':make_target_output(response=None,
@@ -242,13 +236,22 @@ def make_superimposed_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=x['theta_task'],
+    contrast_var = x['theta_task'] % 2
+
+    if contrast_var == 0:
+        contrast = 0.5
+        second_stim_contrast = 1
+    else:
+        contrast = 1
+        second_stim_contrast = 0.5
+    return {'s':make_bimodal_input(stim=0, second_stim=1,
                            fixation=1, Te=Te,
-                           sig_s=sig_s, d_stim=d_stim, other_stim_contrast=0.5),
+                           sig_s=sig_s, d_stim=np.pi, contrast=contrast,
+                           second_stim_contrast=second_stim_contrast),
             'y':make_target_output(response=None,
                                   fixation=1,
                                   Te=Te,
-                                  sig_y=sig_y, d_stim=d_stim)}
+                                  sig_y=sig_y, d_stim=np.pi)}
 
 
 def make_both_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
@@ -257,7 +260,7 @@ def make_both_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float)
     Composed of input (s, Te x 3) and target output (y, Te x 3).
     """
 
-    return {'s':make_input(stim=x['theta_task'],
+    return {'s':make_bimodal_input(stim=x['theta_task'],
                           fixation=1, Te=Te,
                           sig_s=sig_s, d_stim=d_stim,
                           other_stim_contrast=1),
@@ -539,7 +542,7 @@ def get_ground_truth(task_list, epoch_list, p_stay, nx, d_stim=None, eps=1e-10):
     true_M /= np.sum(true_M, axis=-1, keepdims=True)
     
     nz = len(epoch_list)
-    true_W = np.zeros((nx, nz, 6))
+    true_W = np.zeros((nx, nz, 8))
     for x in range(nx):
         for z in range(nz):
             true_sy_dict = parse_z_t(epoch_list[z], {'theta_task':x}, 0, 0, d_stim, 1)

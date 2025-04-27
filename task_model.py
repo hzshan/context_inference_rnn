@@ -139,7 +139,7 @@ def offline_learning(init_M,
     for irun in range(max_iter):
         curr_total_LL = 0
         transition_counts = np.zeros((nc, nz, nz))
-        W_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
+        W_numer = np.zeros((nx, nz, 8))  # 8 is the dimension of stim + response
         W_denom = np.zeros((nx, nz))
         gamma_across_trials = []
 
@@ -374,7 +374,7 @@ def online_learning(init_M,
 
     # initialize sufficient statistics
     transition_counts = np.zeros((nc, nz, nz))
-    W_numer = np.zeros((nx, nz, 6))  # 6 is the dimension of stim + response
+    W_numer = np.zeros((nx, nz, 8))  # 8 is the dimension of stim + response
     W_denom = np.zeros((nx, nz))
 
     for i in range(n_sweeps):
@@ -571,7 +571,7 @@ def _online_learning_single_trial(
 
         # only decay/update parts of W that are visited a lot
         W_update_mask = np.repeat(
-            W_denom_this_trial[..., None] > w_update_threshold, 6, axis=-1)
+            W_denom_this_trial[..., None] > w_update_threshold, 8, axis=-1)
 
         # update parameters
         learned_M_this_trial = _update(
