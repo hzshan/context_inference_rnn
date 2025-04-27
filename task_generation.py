@@ -7,10 +7,12 @@ Tt: duration of trial
 sig_s: input noise standard deviation
 sig_y: target output noise standard deviation
 
-x: dictionary containing the task variables
+x: dictionary containing the task variable(s)
 
 # for a dict of epoch types, search for `epoch_dict` (it's defined mid-file)
 """
+
+S_Y_COMBINED_DIM = 8
 
 task_dict = {
     'PRO_D': 'F/D->S->R_P', # "DelayPro": respond to the stimulus once fixation is off
@@ -20,7 +22,9 @@ task_dict = {
     'ANTI_M': 'F/D->S->F/D->R_M_A', # "MemoryAnti": respond to the opposite after memory period
     'ANTI_R': 'F/D->R_A', # "ResponseAnti": respond to the opposite ASAP
     'ORDER': 'F/D->S->S_B->R_M_P', # respond to the stimulus coming on first
-    'DM': 'F/D->S_S->R_M_P' # respond to the stronger stimulus
+    'DM_PRO': 'F/D->DM_S->DM_R_P', # two stimuli are presented simultaneously, respond to the one that is stronger
+    'DM_ANTI': 'F/D->DM_S->DM_R_A', # two stimuli are presented simultaneously, respond to the one that is weaker
+
 }
 
 
@@ -48,7 +52,7 @@ def make_stim_input(stim, Te: int, d_stim: float):
 
 
 def make_input(stim, fixation: int, Te: int, sig_s: float, d_stim: float,
-               contrast=1, other_stim_contrast=0):
+               contrast=1):
     """
     Generates the input (s) for a given epoch. Assuming a single modality.
 
@@ -70,10 +74,6 @@ def make_input(stim, fixation: int, Te: int, sig_s: float, d_stim: float,
     """
 
     stim_input = make_stim_input(stim, Te, d_stim) * contrast
-
-    # TO FIX
-    # if stim != -1:
-    #     stim_input += make_stim_input(1 - stim, Te, d_stim) * other_stim_contrast
 
     assert fixation in [0, 1]
     fixation_input = np.ones((Te, 1)) * fixation
@@ -126,7 +126,7 @@ def make_target_output(response, fixation: int, Te: int, sig_y: float, d_stim: f
 def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a fixation/delay epoch (F/D).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
     """
 
     return {'s':make_bimodal_input(stim=None, # no stimulus presentation
@@ -144,7 +144,7 @@ def make_delay_or_fixation_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d
 def make_response_from_memory_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response-from-memory pro epoch (R_M_P).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    Composed of input (s, Te x 5 and target output (y, Te x 3).
     """
 
     return {'s':make_bimodal_input(stim=None, # no stimulus presentation
@@ -162,7 +162,7 @@ def make_response_from_memory_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: f
 def make_response_from_memory_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response-from-memory anti epoch (R_M_A).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
     """
 
     return {'s':make_bimodal_input(stim=None, # no stimulus presentation
@@ -180,7 +180,7 @@ def make_response_from_memory_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: 
 def make_response_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response epoch that responds to the presented stimulus. (R_P).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
     """
 
     return {'s':make_bimodal_input(stim=x['theta_task'], # no stimulus presentation
@@ -198,7 +198,7 @@ def make_response_pro_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim
 def make_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a response epoch that responds to the anti stimulus. (R_A).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
     """
 
     return {'s':make_bimodal_input(stim=x['theta_task'],
@@ -216,7 +216,7 @@ def make_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_sti
 def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a stimulus epoch (S).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
     """
 
     # randomly choose a modality to present the stimulus
@@ -230,10 +230,109 @@ def make_stim_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float)
                                    sig_y=sig_y, d_stim=d_stim)}
 
 
+
+def _dm_tasks_contrast_parser(x: dict):
+    '''
+    Take the task variable and return the contrast values for the DM tasks.
+    '''
+
+    assert x['theta_task'] in [0, 1, 2, 3, 4, 5, 6, 7]
+
+    which_stim_is_bigger = x['theta_task'] % 2
+
+    # decide the specific contrast values
+    contrast_values = np.array(
+        [[0.5, 1], [1, 2], [0.5, 2], [0.2, 1.5]])[x['theta_task'] // 2]
+
+    if which_stim_is_bigger == 0:
+        contrast_values = contrast_values[:, ::-1]
+    stim1_contrast, stim2_contrast = contrast_values
+    return stim1_contrast, stim2_contrast
+
+
+def make_dm_stim_epoch(
+        x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
+    """
+    Generates a DM stimulus epoch (DM_S).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
+
+    The logic is a little different from the other epochs. theta_task in x is
+    expected to be an integer. The two stimuli modalities present fixed 
+    "angles" (0 and pi). The parity of theta_task determines which of the two
+    stimuli is presented with a higher contrast. theta_task // 2 determines the
+    specific contrast values.
+
+    """
+
+    stim1_contrast, stim2_contrast = _dm_tasks_contrast_parser(x)
+
+    return {'s':make_bimodal_input(
+        stim=0, second_stim=1, d_stim=np.pi,  # the stimuli are fixed at 0 and pi
+        fixation=0, Te=Te, sig_s=sig_s, 
+        contrast=stim1_contrast, second_stim_contrast=stim2_contrast),
+            'y':make_target_output(response=None,
+                                   fixation=1,
+                                   Te=Te,
+                                   sig_y=sig_y, d_stim=d_stim)}
+
+
+def make_dm_response_pro_epoch(
+        x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
+    """
+    Generates a DM response pro epoch (DM_R_P).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
+
+    The logic is a little different from the other epochs. theta_task in x is
+    expected to be an integer. The two stimuli modalities present fixed 
+    "angles" (0 and pi). The parity of theta_task determines which of the two
+    stimuli is presented with a higher contrast. theta_task // 2 determines the
+    specific contrast values.
+
+    The response direction is also binary (0 or pi).
+
+    """
+
+    contrast, second_contrast = _dm_tasks_contrast_parser(x)
+
+    return {'s':make_bimodal_input(
+        stim=0, second_stim=1, d_stim=np.pi,  # the stimuli are fixed at 0 and pi
+        fixation=0, Te=Te, sig_s=sig_s, 
+        contrast=contrast, second_stim_contrast=second_contrast),
+            'y':make_target_output(response=x['theta_task'] % 2, d_stim=np.pi,
+                                   fixation=0,
+                                   Te=Te,
+                                   sig_y=sig_y)}
+
+
+def make_dm_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
+    """
+    Generates a DM response pro epoch (DM_R_A).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
+
+    The logic is a little different from the other epochs. theta_task in x is
+    expected to be an integer. The two stimuli modalities present fixed 
+    "angles" (0 and pi). The parity of theta_task determines which of the two
+    stimuli is presented with a higher contrast. theta_task // 2 determines the
+    specific contrast values.
+
+    """
+
+    contrast, second_contrast = _dm_tasks_contrast_parser(x)
+
+    return {'s':make_bimodal_input(
+        stim=0, second_stim=1, d_stim=np.pi,  # the stimuli are fixed at 0 and pi
+        fixation=1, Te=Te, sig_s=sig_s, 
+        contrast=contrast, second_stim_contrast=second_contrast),
+            'y':make_target_output(response=1 - x['theta_task'] % 2, d_stim=np.pi,
+                                   fixation=0,
+                                   Te=Te,
+                                   sig_y=sig_y)}
+
+
 def make_superimposed_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_stim: float):
     """
     Generates a superimposed stimulus epoch (S_S).
-    Composed of input (s, Te x 3) and target output (y, Te x 3).
+    Composed of input (s, Te x 5) and target output (y, Te x 3).
     """
 
     contrast_var = x['theta_task'] % 2
@@ -281,6 +380,9 @@ epoch_dict = {
     'R_A': make_response_anti_epoch,
     'F': make_delay_or_fixation_epoch,
     'D': make_delay_or_fixation_epoch,
+    'DM_S': make_dm_stim_epoch,
+    'DM_R_P': make_dm_response_pro_epoch,
+    'DM_R_A': make_dm_response_anti_epoch,
 }
 
 
@@ -542,7 +644,7 @@ def get_ground_truth(task_list, epoch_list, p_stay, nx, d_stim=None, eps=1e-10):
     true_M /= np.sum(true_M, axis=-1, keepdims=True)
     
     nz = len(epoch_list)
-    true_W = np.zeros((nx, nz, 8))
+    true_W = np.zeros((nx, nz, S_Y_COMBINED_DIM))
     for x in range(nx):
         for z in range(nz):
             true_sy_dict = parse_z_t(epoch_list[z], {'theta_task':x}, 0, 0, d_stim, 1)
