@@ -245,7 +245,7 @@ def _dm_tasks_contrast_parser(x: dict):
         [[0.5, 1], [1, 2], [0.5, 2], [0.2, 1.5]])[x['theta_task'] // 2]
 
     if which_stim_is_bigger == 0:
-        contrast_values = contrast_values[:, ::-1]
+        contrast_values = contrast_values[::-1]
     stim1_contrast, stim2_contrast = contrast_values
     return stim1_contrast, stim2_contrast
 
@@ -410,7 +410,8 @@ def compose_trial(seq_of_epochs: str,
                   sig_y: float,
                   p_stay,
                   min_Te,
-                  d_stim=np.pi/2):
+                  d_stim=np.pi/2,
+                  min_Te_R=None):
     """
     Generates a trial composed of a sequence of epochs.
 
@@ -432,6 +433,11 @@ def compose_trial(seq_of_epochs: str,
         all_Te = [np.max([np.random.geometric(prob), min_Te]) for prob in transition_probs]
     else:
         all_Te = np.random.choice([10, 20, 40, 80], size=len(epoch_symbols))
+
+    if min_Te_R is not None:
+        for i, epoch_symbol in enumerate(epoch_symbols):
+            if 'R' in epoch_symbol and all_Te[i] < min_Te_R:
+                all_Te[i] = min_Te_R
 
     epochs = []
     for Te, epoch_symbol in zip(all_Te, epoch_symbols):

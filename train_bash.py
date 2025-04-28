@@ -28,14 +28,14 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 
 
 def cxtrnn_config():
-    config = dict(seed=0, dim_hid=256, alpha=0.1,
+    config = dict(seed=0, dim_hid=256, alpha=0.1, dim_s=5, dim_y=3,
                   gating_type=3, rank=None, share_io=False, frz_io_layer=False,
                   nonlin='tanh', init_scale=None,
                   sig_r=0.05, w_fix=1, n_skip=0, reg_act=0,
-                  optim='Adam', reset_optim=True, lr=1e-3, weight_decay=0,
+                  optim='Adam', reset_optim=False, lr=1e-3, weight_decay=0,
                   batch_size=256, num_iter=1000, n_trials_ts=200,
                   sig_s=0.01, p_stay=0.9, min_Te=5, nx=8, d_stim=2*np.pi/8,
-                  epoch_type=1, fixation_type=1, info_type='z',
+                  epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None,
                   task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                   z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                   use_task_model=False, task_model_ntrials=np.inf,
@@ -45,23 +45,26 @@ def cxtrnn_config():
     config_ranges = {
         #################
         'gating_type': [3],
+        # 'fixation_type': [2],
+        # 'w_fix': [0.2],
+        # 'min_Te_R': [10],
+        # 'p_stay': [0.95],
         # 'nonlin': ['softplus', 'relu', 'tanh'],
         ######################
-        # 'task_list': [['PRO_D', 'PRO_S', 'ANTI_D', 'ANTI_S']],
-        # 'task_list': [['PRO_D', 'ANTI_D', 'PRO_R', 'ANTI_R'],
-        #               ['PRO_R', 'ANTI_R', 'PRO_D', 'ANTI_D']],
-        # 'z_list': [['F/D', 'S', 'R_P', 'R_A']],
-        'task_list': [['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'DM']],
-        'z_list': [['F/D', 'S', 'S_S', 'R_P', 'R_M_P', 'R_A', 'R_M_A']],
+        'task_list': [['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+                      ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
+        'z_list': [['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A', 'DM_S', 'DM_R_P', 'DM_R_A']],
+        # 'task_list': [['PRO_DM', 'ANTI_DM']],
+        # 'z_list': [['F/D', 'DM_S', 'DM_R_P', 'DM_R_A']],
         #######################
-        # 'num_iter': [1000],
-        # 'ckpt_step': [10],
-        'reset_optim': [False],
-        # 'weight_decay': [0, 1e-5],
+        'save_ckpt': [False],
+        # 'num_iter': [500],
+        # 'lr': [1e-2],
+        # 'weight_decay': [0],
         'optim': ['AdamGated'],
-        # 'wd_z_eps': [0],
+        # 'wd_z_eps': [1e-3],
         'lr_z_eps': [1e-3],
-        'gamma': [1, 0.9, 0.5, 0.1],
+        'gamma': [0.5],
         ###########################
         # 'use_task_model': [True],
         # 'task_model_ntrials': [512],
@@ -76,30 +79,29 @@ def cxtrnn_config():
             config['z_list'] = ['F', 'D'] + config['z_list'][1:]
         if config['gating_type'] == 'all':
             config['rank'] = len(config['z_list']) * 3
-        save_name = 'cxtrnn_seq_gating' + str(config['gating_type'])
+        config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
+        save_name = 'cxtrnn_seq_v1_gating' + str(config['gating_type'])
         save_name += '_frzio' if config['frz_io_layer'] else ''
         save_name += '_ioZ' if not config['share_io'] else ''
         save_name += ('_a' + str(config['alpha'])) if config['alpha'] != 0.5 else ''
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
-        save_name += ('_init' + str(config['init_scale'])) if config['init_scale'] is not None else ''
-        save_name += ('_sigr' + str(config['sig_r'])) if config['sig_r'] != 0 else ''
         save_name += ('_wfix' + str(config['w_fix'])) if config['w_fix'] != 1 else ''
         save_name += ('_nskip' + str(config['n_skip'])) if config['n_skip'] != 0 else ''
-        save_name += '_' + ''.join([cur[0] + cur[-1].lower() for cur in config['task_list']])
-        save_name += '_sigs' + (str(config['sig_s']) if config['sig_s'] != 0.01 else '')
-        config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
-        save_name += '_dur' if config['p_stay'] is None else ('_minT' + str(config['min_Te']))
+        save_name += '_' + ''.join([cur.split('_')[0][0] + cur.split('_')[1].lower() for cur in config['task_list']])
+        save_name += ('_pstay' + str(config['p_stay'])) if config['p_stay'] != 0.9 else ''
+        save_name += ('_minT' + str(config['min_Te'])) if config['min_Te'] != 5 else ''
+        save_name += ('_minTR' + str(config['min_Te_R'])) if config['min_Te_R'] is not None else ''
         save_name += ('_z' + str(config['epoch_type'])) if config['epoch_type'] != 1 else ''
         save_name += ('_fix' + str(config['fixation_type'])) if config['fixation_type'] != 1 else ''
-        save_name += '_nx' + str(config['nx']) + 'dx' + str(int(np.pi/config['d_stim']))
-        save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 500 else ''
+        save_name += ('_nx' + str(config['nx'])) if config['nx'] != 8 else ''
+        save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 1000 else ''
         save_name += ('_' + str(config['optim'])) if config['optim'] != 'Adam' else ''
         save_name += ('_wdEps' + str(config['wd_z_eps'])) if 'wd_z_eps' in config else ''
         save_name += ('_lrEps' + str(config['lr_z_eps'])) if 'lr_z_eps' in config else ''
         save_name += ('_gamma' + str(config['gamma'])) if 'gamma' in config else ''
-        save_name += '_sameopt' if not config['reset_optim'] else ''
-        save_name += ('_lr' + str(config['lr'])) if config['lr'] != 0.01 else ''
+        save_name += '_resetopt' if config['reset_optim'] else ''
+        save_name += ('_lr' + str(config['lr'])) if config['lr'] != 0.001 else ''
         save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
         save_name += ('_reg' + str(config['reg_act'])) if config['reg_act'] != 0 else ''
         if config['use_task_model']:

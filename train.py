@@ -26,7 +26,8 @@ def task_epoch(task, epoch_type=1):
             'ANTI_M': 'F/D->S->F/D->R_M_A',
             'ANTI_R': 'F/D->R_A',
             'ORDER': 'F/D->S->S_B->R_M_P',
-            'DM': 'F/D->S_S->R_M_P'
+            'PRO_DM': 'F/D->DM_S->DM_R_P',
+            'ANTI_DM': 'F/D->DM_S->DM_R_A',
         }
     elif epoch_type == 2:
         task_dict = {
@@ -39,7 +40,8 @@ def task_epoch(task, epoch_type=1):
             'ANTI_M': 'F->S->D->R_M_A',
             'ANTI_R': 'F->R_A',
             'ORDER': 'F->S->S_B->R_M_P',
-            'DM': 'F->S_S->R_M_P'
+            'PRO_DM': 'F->DM_S->DM_R_P',
+            'ANTI_DM': 'F->DM_S->DM_R_A',
         }
     else:
         raise NotImplementedError
@@ -178,14 +180,28 @@ def masked_mse_loss(predictions, states, targets, lengths, w_fix=1, n_skip=0, re
     return loss
 
 
+@torch.no_grad()
+def batch_performance(out, y, lengths):
+    seq_len, batch_size, dim_y = out.shape
+    out_end = out[lengths - 1, torch.arange(batch_size)]
+    out_theta = torch.arctan2(out_end[:, 1], out_end[:, 0])
+    y_end = y[lengths - 1, torch.arange(batch_size)]
+    y_theta = torch.arctan2(y_end[:, 1], y_end[:, 0])
+    d_theta = torch.remainder(out_theta - y_theta + math.pi, 2 * math.pi) - math.pi
+    response_correct = d_theta.abs() < math.pi / 10
+    fixation_correct = (out[..., -1] > 0.5) == (y[..., -1] > 0.5)
+    mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)
+    fixation_correct = torch.all(fixation_correct | ~mask.to(y.device), dim=0)
+    correct = response_correct & fixation_correct
+    return correct
+
+
 def generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
-                   epoch_type, fixation_type, info_type='z', epoch_str=None):
+                   epoch_type, fixation_type, info_type='z', epoch_str=None, min_Te_R=None):
     if epoch_str is None:
         epoch_str = task_epoch(task, epoch_type=epoch_type)
-        if task == 'DM':
-            x = x if x in [0, 1] else np.random.randint(2)
-            d_stim = np.pi / 2
-    sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te, d_stim=d_stim)
+    sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te,
+                                   d_stim=d_stim, min_Te_R=min_Te_R)
     if fixation_type == 2:
         sy['s'][:, -1] = 1 - sy['s'][:, -1]
         sy['y'][:, -1] = 1 - sy['y'][:, -1]
@@ -211,7 +227,7 @@ class TaskDataset(Dataset):
                  d_stim=np.pi / 2, p_stay=0.9, min_Te=5,
                  task='PRO_D', task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                  z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
-                 epoch_type=1, fixation_type=1, info_type='z'):
+                 epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None):
         self.dim_s = dim_s
         self.dim_y = dim_y
         self.trials = []
@@ -219,7 +235,7 @@ class TaskDataset(Dataset):
         for i_trial in range(n_trials):
             x = np.random.randint(nx)
             syz = generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
-                                 epoch_type, fixation_type, info_type=info_type)
+                                 epoch_type, fixation_type, info_type=info_type, min_Te_R=min_Te_R)
             self.trials.append(torch.tensor(syz, dtype=torch.float32))
             self.gdth_z.append(syz[:, (dim_s + dim_y):])
 
@@ -250,9 +266,9 @@ def set_deterministic(seed):
 @torch.no_grad()
 def evaluate(model, ts_data_loaders, loss_kwargs):
     device = next(model.parameters()).device
-    ts_loss = []
+    ts_loss, ts_perf = [], []
     for ts_data_loader in ts_data_loaders:
-        cur_ts_loss = []
+        cur_ts_loss, cur_ts_perf = [], []
         dim_s = ts_data_loader.dataset.dim_s
         dim_y = ts_data_loader.dataset.dim_y
         for ib, cur_batch in enumerate(ts_data_loader):
@@ -262,8 +278,11 @@ def evaluate(model, ts_data_loaders, loss_kwargs):
             out, states = model(s, z)
             loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
             cur_ts_loss.append(loss.item())
+            perf = batch_performance(out, y, lengths)
+            cur_ts_perf.append(perf.float().mean().item())
         ts_loss.append(np.mean(cur_ts_loss))
-    return ts_loss
+        ts_perf.append(np.mean(cur_ts_perf))
+    return ts_loss, ts_perf
 
 
 def update_inferred_z(dataset, itask, task_model, use_y=True):
@@ -290,14 +309,14 @@ def get_optimizer(model, optim, lr=0.01, weight_decay=0):
     return optimizer
 
 
-def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5, init_scale=None,
+def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, init_scale=None,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh',
                          sig_r=0, w_fix=1, n_skip=0, reg_act=0,
                          optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                          wd_z_eps=0, lr_z_eps=0, gamma=1,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
-                         epoch_type=1, fixation_type=1, info_type='z',
+                         epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                          use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False,
@@ -316,11 +335,13 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5, ini
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
-        return model, tr_loss_arr, ts_loss_arr
+        ts_perf_arr = np.load(save_dir + '/ts_perf.npy')
+        return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
     data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=z_list, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
-                       epoch_type=epoch_type, fixation_type=fixation_type, info_type=info_type)
+                       epoch_type=epoch_type, fixation_type=fixation_type,
+                       info_type=info_type, min_Te_R=min_Te_R)
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
         ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
@@ -328,9 +349,10 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5, ini
         ts_data_loaders.append(ts_data_loader)
 
     loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
-    ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
+    ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
+    ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
     ###########################################
     if use_task_model:
@@ -400,11 +422,13 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5, ini
                             print(f'test max inference error on task {task_ts}: {max_error:.4f}', flush=True)
                 ####################################################
                 model.eval()
-                ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
+                ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
+                    ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
                     if verbose:
-                        print(f'test loss on task {task_ts}: {ts_loss[itask_ts]:.4f}', flush=True)
+                        print(f'test on task {task_ts}: loss {ts_loss[itask_ts]:.4f}, '
+                              f'perf {ts_perf[itask_ts]:.4f}', flush=True)
                 if save_ckpt:
                     ckpt_list.append(deepcopy(model.state_dict()))
                     if use_task_model:
@@ -412,17 +436,19 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3, alpha=0.5, ini
 
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
+    ts_perf_arr = np.array(ts_perf_arr)
     if save_dir is not None:
         torch.save(model.state_dict(), save_dir + '/model.pth')
         torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
         np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
+        np.save(save_dir + '/ts_perf.npy', ts_perf_arr)
         if use_task_model:
             np.save(save_dir + '/ts_err.npy', ts_err_arr)
             with open(save_dir + '/task_model.pkl', 'wb') as f:
                 pickle.dump(task_model, f)
                 pickle.dump(task_model_ckpt_list, f)
-    return model, tr_loss_arr, ts_loss_arr
+    return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
 
 class AdamGated(torch.optim.Optimizer):
@@ -625,12 +651,12 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
     return proj_mtrx_dict
 
 
-def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
+def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                              alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0,
                              optim='AdamWithProj', reset_optim=True, use_proj=False, lr=0.01, weight_decay=0,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
-                             epoch_type=1, fixation_type=1, info_type='c',
+                             epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None,
                              task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                              verbose=True, ckpt_step=10, alpha_cov=0.001,
                              save_dir=None, retrain=True, save_ckpt=False, **kwargs):
@@ -645,11 +671,13 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
-        return model, tr_loss_arr, ts_loss_arr
+        ts_perf_arr = np.load(save_dir + '/ts_perf.npy')
+        return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
     data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=None, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
-                       epoch_type=epoch_type, fixation_type=fixation_type, info_type=info_type)
+                       epoch_type=epoch_type, fixation_type=fixation_type,
+                       info_type=info_type, min_Te_R=min_Te_R)
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
         ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
@@ -657,9 +685,10 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         ts_data_loaders.append(ts_data_loader)
 
     loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
-    ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
+    ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
+    ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
     ###########################################
     proj_mtrx_dict = dict(cov_1=0, cov_2=0, cov_3=0, cov_4=0, proj_1=None, proj_2=None, proj_3=None, proj_4=None)
@@ -688,11 +717,13 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
                 model.eval()
-                ts_loss = evaluate(model, ts_data_loaders, loss_kwargs)
+                ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
+                    ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
                     if verbose:
-                        print(f'test loss on task {task_ts}: {ts_loss[itask_ts]:.4f}', flush=True)
+                        print(f'test on task {task_ts}: loss {ts_loss[itask_ts]:.4f}, '
+                              f'perf {ts_perf[itask_ts]:.4f}', flush=True)
                 if save_ckpt:
                     ckpt_list.append(deepcopy(model.state_dict()))
         ################################################
@@ -703,12 +734,14 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=3, dim_y=3,
         ################################################################
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
+    ts_perf_arr = np.array(ts_perf_arr)
     if save_dir is not None:
         torch.save(model.state_dict(), save_dir + '/model.pth')
         torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
         np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
-    return model, tr_loss_arr, ts_loss_arr
+        np.save(save_dir + '/ts_perf.npy', ts_perf_arr)
+    return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
 
 if __name__ == '__main__':
@@ -717,7 +750,7 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_gating3_ioZ_a0pt1_nh256_sigr0pt05_PdAdPmAmDm_sigs_minT5_nx8dx4_nitr1000_sameopt_lr0pt001_sd0'
+        save_name = 'cxtrnn_seq_gating3_ioZ_a0pt1_nh256_sigr0pt05_PdPmAdAmDm_sigs_minT5_nx8dx4_nitr1000_AdamGated_lrEps0pt001_gamma1_sameopt_lr0pt001_sd0'
         config = load_config(save_name)
         config['retrain'] = False
     else:
@@ -727,17 +760,19 @@ if __name__ == '__main__':
         save_name = args.save_name
         config = load_config(save_name)
     train_fn = eval(config.get('train_fn', 'train_cxtrnn_sequential'))
-    model, tr_loss_arr, ts_loss_arr = train_fn(**config)
+    model, tr_loss_arr, ts_loss_arr, ts_perf_arr = train_fn(**config)
     ####################################################
-    fig, axes = plt.subplots(2, 1, figsize=(5, 6), sharex=True, sharey=True)
+    fig, axes = plt.subplots(3, 1, figsize=(4, 6), sharex=True, sharey=False)
     axes[0].plot(tr_loss_arr, color='gray')
-    for itask in range(len(config['task_list'])):
-        axes[1].plot(ts_loss_arr[itask], color=f'C{itask}', label=config['task_list'][itask])
-    axes[1].legend()
     axes[0].set_ylabel('training loss')
-    axes[1].set_ylabel('test loss')
+    for iax in [1, 2]:
+        ts_arr = [ts_loss_arr, ts_perf_arr][iax - 1]
+        ylabel = ['test loss', 'test perf'][iax - 1]
+        for itask in range(len(config['task_list'])):
+            axes[iax].plot(ts_arr[itask], color=f'C{itask}', label=config['task_list'][itask])
+        axes[iax].legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        axes[iax].set_ylabel(ylabel)
     axes[1].set_ylim([-0.05, 0.5])
-    axes[1].legend(loc='center left', bbox_to_anchor=(1, 0.5))
     if config['save_dir'] is not None:
         fig.savefig(config['save_dir'] + '/loss.png', bbox_inches='tight')
     ####################################################
@@ -754,7 +789,8 @@ if __name__ == '__main__':
         sig_y = 0
         syz = generate_trial(task, x, config['z_list'], config['task_list'], config['sig_s'], sig_y,
                              config['p_stay'], config['min_Te'], config['d_stim'],
-                             config['epoch_type'], config['fixation_type'], info_type=config.get('info_type', 'z'))
+                             config['epoch_type'], config['fixation_type'],
+                             info_type=config.get('info_type', 'z'), min_Te_R=config.get('min_Te_R', None))
         syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
         s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
         with torch.no_grad():
