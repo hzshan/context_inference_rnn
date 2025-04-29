@@ -168,7 +168,8 @@ def masked_mse_loss(predictions, states, targets, lengths, w_fix=1, n_skip=0, re
     seq_len, batch_size, dim_y = predictions.shape
     mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
     mask = mask.to(predictions.device).unsqueeze(-1)
-    w = 1 - targets[:, :, -1].clone()
+    w = targets[:, :, -1].clone()
+    w = (1 - w) if w[0, 0] == 1 else w
     w[w == 0] = w_fix
     grace_idx = w.argmax(dim=0)[None, :] + torch.arange(n_skip)[:, None].to(w.device)
     grace_idx = torch.clamp(grace_idx, max=w.shape[0] - 1)
@@ -189,11 +190,11 @@ def batch_performance(out, y, lengths):
     y_theta = torch.arctan2(y_end[:, 1], y_end[:, 0])
     d_theta = torch.remainder(out_theta - y_theta + math.pi, 2 * math.pi) - math.pi
     response_correct = d_theta.abs() < math.pi / 10
-    fixation_correct = (out[..., -1] > 0.5) == (y[..., -1] > 0.5)
-    mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)
-    fixation_correct = torch.all(fixation_correct | ~mask.to(y.device), dim=0)
-    correct = response_correct & fixation_correct
-    return correct
+    # fixation_correct = (out[..., -1] > 0.5) == (y[..., -1] > 0.5)
+    # mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)
+    # fixation_correct = torch.all(fixation_correct | ~mask.to(y.device), dim=0)
+    # correct = response_correct & fixation_correct
+    return response_correct
 
 
 def generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
@@ -750,7 +751,7 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_gating3_ioZ_a0pt1_nh256_sigr0pt05_PdPmAdAmDm_sigs_minT5_nx8dx4_nitr1000_AdamGated_lrEps0pt001_gamma1_sameopt_lr0pt001_sd0'
+        save_name = 'cxtrnn_seq_v1_gating3_ioZ_a0pt1_nh256_wfix0pt2_PdPmAdAmPdmAdm_fix2_AdamGated_wdEps0pt001_lrEps0pt001_gamma0pt5_wd1e-05_sd0'
         config = load_config(save_name)
         config['retrain'] = False
     else:
@@ -772,7 +773,7 @@ if __name__ == '__main__':
             axes[iax].plot(ts_arr[itask], color=f'C{itask}', label=config['task_list'][itask])
         axes[iax].legend(loc='center left', bbox_to_anchor=(1, 0.5))
         axes[iax].set_ylabel(ylabel)
-    axes[1].set_ylim([-0.05, 0.5])
+    # axes[1].set_ylim([-0.05, 0.5])
     if config['save_dir'] is not None:
         fig.savefig(config['save_dir'] + '/loss.png', bbox_inches='tight')
     ####################################################

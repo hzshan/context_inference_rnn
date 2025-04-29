@@ -45,7 +45,7 @@ def cxtrnn_config():
     config_ranges = {
         #################
         'gating_type': [3],
-        # 'fixation_type': [2],
+        'fixation_type': [2],
         # 'w_fix': [0.2],
         # 'min_Te_R': [10],
         # 'p_stay': [0.95],
@@ -60,7 +60,7 @@ def cxtrnn_config():
         'save_ckpt': [False],
         # 'num_iter': [500],
         # 'lr': [1e-2],
-        # 'weight_decay': [0],
+        # 'weight_decay': [1e-5],
         'optim': ['AdamGated'],
         # 'wd_z_eps': [1e-3],
         'lr_z_eps': [1e-3],
@@ -114,47 +114,48 @@ def cxtrnn_config():
 
 
 def leakyrnn_config():
-    config = dict(seed=0, dim_hid=256, dim_s=3, dim_y=3,
+    config = dict(seed=0, dim_hid=256, dim_s=5, dim_y=3,
                  alpha=0.1, nonlin='tanh', sig_r=0.05, w_fix=1, n_skip=0,
-                 optim='SGDWithProj', reset_optim=True, use_proj=False, lr=0.01, weight_decay=1e-5,
+                 optim='AdamWithProj', reset_optim=False, use_proj=False, lr=1e-3, weight_decay=0,
                  batch_size=256, num_iter=1000, n_trials_ts=200, n_trials_vl=200,
                  sig_s=0.01, p_stay=0.9, min_Te=5, nx=8, d_stim=2*np.pi/8,
-                 epoch_type=1, fixation_type=1, info_type='c',
+                 epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None,
                  task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], z_list=None,
                  verbose=True, ckpt_step=10, alpha_cov=0.001,
                  save_dir=None, retrain=True, save_ckpt=False,
                  train_fn='train_leakyrnn_sequential')
     config_ranges = {
-        'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
-        'lr': [0.01],
-        'num_iter': [30],
-        'ckpt_step': [1],
-        'optim': ['AdamWithProj'],
-        'reset_optim': [False],
-        'use_proj': [True, False],
+        # 'fixation_type': [2],
+        # 'p_stay': [None],
+        'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+                      ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
+        'lr': [0.001],
+        'weight_decay': [1e-5],
+        'use_proj': [True],
         'seed': [0],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
     save_names = []
     for config in configs:
+        config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
         save_name = 'leakyrnn'
         save_name += '_proj' if config['use_proj'] else ''
         save_name += ('_a' + str(config['alpha'])) if config['alpha'] != 0.5 else ''
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 50 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
-        save_name += ('_sigr' + str(config['sig_r'])) if config['sig_r'] != 0 else ''
-        save_name += '_' + ''.join([cur[0] + cur[-1].lower() for cur in config['task_list']])
-        save_name += '_sigs' + (str(config['sig_s']) if config['sig_s'] != 0.01 else '')
-        config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
-        save_name += '_dur' if config['p_stay'] is None else ('_minT' + str(config['min_Te']))
-        save_name += ('_z' + str(config['epoch_type'])) if config['epoch_type'] != 1 else ''
+        save_name += ('_wfix' + str(config['w_fix'])) if config['w_fix'] != 1 else ''
+        save_name += ('_nskip' + str(config['n_skip'])) if config['n_skip'] != 0 else ''
+        save_name += '_' + ''.join([cur.split('_')[0][0] + cur.split('_')[1].lower() for cur in config['task_list']])
+        save_name += ('_pstay' + str(config['p_stay'])) if config['p_stay'] != 0.9 else ''
+        save_name += ('_minT' + str(config['min_Te'])) if config['min_Te'] != 5 else ''
+        save_name += ('_minTR' + str(config['min_Te_R'])) if config['min_Te_R'] is not None else ''
         save_name += ('_fix' + str(config['fixation_type'])) if config['fixation_type'] != 1 else ''
-        save_name += '_nx' + str(config['nx']) + 'dx' + str(int(np.pi/config['d_stim']))
-        save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 500 else ''
-        save_name += '_' + config['optim']
-        save_name += '_sameopt' if not config['reset_optim'] else ''
-        save_name += ('_lr' + str(config['lr'])) if config['lr'] != 0.01 else ''
+        save_name += ('_nx' + str(config['nx'])) if config['nx'] != 8 else ''
+        save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 1000 else ''
+        save_name += ('_' + str(config['optim'])) if config['optim'] != 'Adam' else ''
+        save_name += '_resetopt' if config['reset_optim'] else ''
+        save_name += ('_lr' + str(config['lr'])) if config['lr'] != 0.001 else ''
         save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 0 else ''
         save_name += '_sd' + str(config['seed'])
         save_names.append(save_name.replace('.', 'pt'))
@@ -162,7 +163,7 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = cxtrnn_config()
+    configs, save_names = leakyrnn_config()
     for config, save_name in zip(configs, save_names):
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)
