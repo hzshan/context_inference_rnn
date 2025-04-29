@@ -268,7 +268,7 @@ def make_dm_stim_epoch(
 
     return {'s':make_bimodal_input(
         stim=0, second_stim=1, d_stim=np.pi,  # the stimuli are fixed at 0 and pi
-        fixation=0, Te=Te, sig_s=sig_s, 
+        fixation=1, Te=Te, sig_s=sig_s, 
         contrast=stim1_contrast, second_stim_contrast=stim2_contrast),
             'y':make_target_output(response=None,
                                    fixation=1,
