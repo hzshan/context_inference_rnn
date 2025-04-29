@@ -411,7 +411,8 @@ def compose_trial(seq_of_epochs: str,
                   p_stay,
                   min_Te,
                   d_stim=np.pi/2,
-                  min_Te_R=None):
+                  min_Te_R=None,
+                  p_stay_R=None):
     """
     Generates a trial composed of a sequence of epochs.
 
@@ -428,16 +429,20 @@ def compose_trial(seq_of_epochs: str,
     """
     epoch_symbols = seq_of_epochs.split('->')
 
-    if p_stay is not None:
-        transition_probs = np.ones(len(epoch_symbols)) * (1 - p_stay)
-        all_Te = [np.max([np.random.geometric(prob), min_Te]) for prob in transition_probs]
-    else:
+    if p_stay is None:
         all_Te = np.random.choice([10, 20, 40, 80], size=len(epoch_symbols))
-
-    if min_Te_R is not None:
+    else:
+        all_Te = []
         for i, epoch_symbol in enumerate(epoch_symbols):
-            if 'R' in epoch_symbol and all_Te[i] < min_Te_R:
-                all_Te[i] = min_Te_R
+            cur_p_stay = p_stay
+            cur_min_Te = min_Te
+            if 'R' in epoch_symbol:
+                if p_stay_R is not None:
+                    cur_p_stay = p_stay_R
+                if min_Te_R is not None:
+                    cur_min_Te = min_Te_R
+            cur_Te = np.max([np.random.geometric(1 - cur_p_stay), cur_min_Te])
+            all_Te.append(cur_Te)
 
     epochs = []
     for Te, epoch_symbol in zip(all_Te, epoch_symbols):
