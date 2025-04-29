@@ -40,31 +40,34 @@ def cxtrnn_config():
                   z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                   use_task_model=False, task_model_ntrials=np.inf,
                   verbose=True, ckpt_step=10,
-                  save_dir=None, retrain=True, save_ckpt=True,
+                  save_dir=None, retrain=True, save_ckpt=False,
                   train_fn='train_cxtrnn_sequential')
     config_ranges = {
         #################
         'gating_type': [3],
         'fixation_type': [2],
         # 'w_fix': [0.2],
-        # 'min_Te_R': [10],
-        # 'p_stay': [0.95],
-        # 'nonlin': ['softplus', 'relu', 'tanh'],
+        'min_Te_R': [10],
+        'p_stay_R': [0.95],
+        # 'nonlin': ['relu'], # softplus
         ######################
-        'task_list': [['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-                      ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
+        'task_list': [['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+                      ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
+        # 'task_list': [['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+        #               ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
         'z_list': [['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A', 'DM_S', 'DM_R_P', 'DM_R_A']],
         # 'task_list': [['PRO_DM', 'ANTI_DM']],
         # 'z_list': [['F/D', 'DM_S', 'DM_R_P', 'DM_R_A']],
         #######################
+        'optim': ['AdamGated'],
+        'weight_decay': [1e-5],
+        'wd_z_eps': [1e-3],
+        'lr_z_eps': [1e-3],
+        'gamma': [0.5],
+        ##########################
         'save_ckpt': [False],
         # 'num_iter': [500],
         # 'lr': [1e-2],
-        # 'weight_decay': [1e-5],
-        'optim': ['AdamGated'],
-        # 'wd_z_eps': [1e-3],
-        'lr_z_eps': [1e-3],
-        'gamma': [0.5],
         ###########################
         # 'use_task_model': [True],
         # 'task_model_ntrials': [512],
@@ -125,11 +128,12 @@ def leakyrnn_config():
                  save_dir=None, retrain=True, save_ckpt=False,
                  train_fn='train_leakyrnn_sequential')
     config_ranges = {
-        # 'fixation_type': [2],
-        # 'p_stay': [None],
+        'fixation_type': [2],
+        'w_fix': [0.2],
+        'nonlin': ['tanh', 'relu'],
         'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
                       ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
-        'lr': [0.001],
+        'lr': [0.001, 0.01],
         'weight_decay': [1e-5],
         'use_proj': [True],
         'seed': [0],
@@ -163,7 +167,7 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = leakyrnn_config()
+    configs, save_names = cxtrnn_config()
     for config, save_name in zip(configs, save_names):
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)

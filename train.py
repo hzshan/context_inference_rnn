@@ -18,14 +18,14 @@ def task_epoch(task, epoch_type=1):
     if epoch_type == 1:
         task_dict = {
             'PRO_D': 'F/D->S->R_P',
-            'PRO_S': 'F/D->S->R_M_P',
+            # 'PRO_S': 'F/D->S->R_M_P',
             'PRO_M': 'F/D->S->F/D->R_M_P',
-            'PRO_R': 'F/D->R_P',
+            # 'PRO_R': 'F/D->R_P',
             'ANTI_D': 'F/D->S->R_A',
-            'ANTI_S': 'F/D->S->R_M_A',
+            #'ANTI_S': 'F/D->S->R_M_A',
             'ANTI_M': 'F/D->S->F/D->R_M_A',
-            'ANTI_R': 'F/D->R_A',
-            'ORDER': 'F/D->S->S_B->R_M_P',
+            # 'ANTI_R': 'F/D->R_A',
+            #'ORDER': 'F/D->S->S_B->R_M_P',
             'PRO_DM': 'F/D->DM_S->DM_R_P',
             'ANTI_DM': 'F/D->DM_S->DM_R_A',
         }
@@ -190,19 +190,16 @@ def batch_performance(out, y, lengths):
     y_theta = torch.arctan2(y_end[:, 1], y_end[:, 0])
     d_theta = torch.remainder(out_theta - y_theta + math.pi, 2 * math.pi) - math.pi
     response_correct = d_theta.abs() < math.pi / 10
-    # fixation_correct = (out[..., -1] > 0.5) == (y[..., -1] > 0.5)
-    # mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)
-    # fixation_correct = torch.all(fixation_correct | ~mask.to(y.device), dim=0)
-    # correct = response_correct & fixation_correct
     return response_correct
 
 
 def generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
-                   epoch_type, fixation_type, info_type='z', epoch_str=None, min_Te_R=None):
+                   epoch_type, fixation_type, info_type='z',
+                   epoch_str=None, min_Te_R=None, p_stay_R=None):
     if epoch_str is None:
         epoch_str = task_epoch(task, epoch_type=epoch_type)
     sy, boundaries = compose_trial(epoch_str, {'theta_task': x}, sig_s, sig_y, p_stay, min_Te,
-                                   d_stim=d_stim, min_Te_R=min_Te_R)
+                                   d_stim=d_stim, min_Te_R=min_Te_R, p_stay_R=p_stay_R)
     if fixation_type == 2:
         sy['s'][:, -1] = 1 - sy['s'][:, -1]
         sy['y'][:, -1] = 1 - sy['y'][:, -1]
@@ -228,7 +225,7 @@ class TaskDataset(Dataset):
                  d_stim=np.pi / 2, p_stay=0.9, min_Te=5,
                  task='PRO_D', task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                  z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
-                 epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None):
+                 epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None, p_stay_R=None):
         self.dim_s = dim_s
         self.dim_y = dim_y
         self.trials = []
@@ -236,7 +233,8 @@ class TaskDataset(Dataset):
         for i_trial in range(n_trials):
             x = np.random.randint(nx)
             syz = generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
-                                 epoch_type, fixation_type, info_type=info_type, min_Te_R=min_Te_R)
+                                 epoch_type, fixation_type, info_type=info_type,
+                                 min_Te_R=min_Te_R, p_stay_R=p_stay_R)
             self.trials.append(torch.tensor(syz, dtype=torch.float32))
             self.gdth_z.append(syz[:, (dim_s + dim_y):])
 
@@ -317,7 +315,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                          wd_z_eps=0, lr_z_eps=0, gamma=1,
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
-                         epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None,
+                         epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None, p_stay_R=None,
                          task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                          use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False,
@@ -342,7 +340,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
     data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=z_list, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
                        epoch_type=epoch_type, fixation_type=fixation_type,
-                       info_type=info_type, min_Te_R=min_Te_R)
+                       info_type=info_type, min_Te_R=min_Te_R, p_stay_R=p_stay_R)
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
         ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
@@ -657,7 +655,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                              optim='AdamWithProj', reset_optim=True, use_proj=False, lr=0.01, weight_decay=0,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
-                             epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None,
+                             epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
                              task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                              verbose=True, ckpt_step=10, alpha_cov=0.001,
                              save_dir=None, retrain=True, save_ckpt=False, **kwargs):
@@ -678,7 +676,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
     data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=None, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
                        epoch_type=epoch_type, fixation_type=fixation_type,
-                       info_type=info_type, min_Te_R=min_Te_R)
+                       info_type=info_type, min_Te_R=min_Te_R, p_stay_R=p_stay_R)
     ts_data_loaders = []
     for itask, task in enumerate(task_list):
         ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
@@ -791,7 +789,8 @@ if __name__ == '__main__':
         syz = generate_trial(task, x, config['z_list'], config['task_list'], config['sig_s'], sig_y,
                              config['p_stay'], config['min_Te'], config['d_stim'],
                              config['epoch_type'], config['fixation_type'],
-                             info_type=config.get('info_type', 'z'), min_Te_R=config.get('min_Te_R', None))
+                             info_type=config.get('info_type', 'z'),
+                             min_Te_R=config.get('min_Te_R', None), p_stay_R=config.get('p_stay_R', None))
         syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
         s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
         with torch.no_grad():
