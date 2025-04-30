@@ -221,8 +221,8 @@ def generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_s
 
 
 class TaskDataset(Dataset):
-    def __init__(self, n_trials=64, dim_s=3, dim_y=3, nx=2, sig_s=0.05, sig_y=0,
-                 d_stim=np.pi / 2, p_stay=0.9, min_Te=5,
+    def __init__(self, n_trials=64, dim_s=5, dim_y=3, nx=8, sig_s=0.05, sig_y=0,
+                 d_stim=np.pi / 4, p_stay=0.9, min_Te=5,
                  task='PRO_D', task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                  z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                  epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None, p_stay_R=None):
@@ -230,13 +230,16 @@ class TaskDataset(Dataset):
         self.dim_y = dim_y
         self.trials = []
         self.gdth_z = []
+        self.gdth_c = []
         for i_trial in range(n_trials):
             x = np.random.randint(nx)
-            syz = generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
+            cur_task = np.random.choice(task_list) if task == 'all' else task
+            syz = generate_trial(cur_task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
                                  epoch_type, fixation_type, info_type=info_type,
                                  min_Te_R=min_Te_R, p_stay_R=p_stay_R)
             self.trials.append(torch.tensor(syz, dtype=torch.float32))
             self.gdth_z.append(syz[:, (dim_s + dim_y):])
+            self.gdth_c.append(task_list.index(cur_task))
 
     def __len__(self):
         return len(self.trials)
@@ -284,12 +287,14 @@ def evaluate(model, ts_data_loaders, loss_kwargs):
     return ts_loss, ts_perf
 
 
-def update_inferred_z(dataset, itask, task_model, use_y=True):
+def update_inferred_z(dataset, task_model, use_y=True):
     max_error = []
     dim_s = dataset.dim_s
     dim_y = dataset.dim_y
-    for itrial, trial in enumerate(dataset.trials):
-        trial_ = (itask, None, {'s': trial[:, :dim_s].numpy(), 'y': trial[:, dim_s:(dim_s + dim_y)].numpy()})
+    for itrial in range(len(dataset)):
+        trial = dataset.trials[itrial]
+        trial_ = (dataset.gdth_c[itrial], None,
+                  {'s': trial[:, :dim_s].numpy(), 'y': trial[:, dim_s:(dim_s + dim_y)].numpy()})
         gamma, _ = task_model.infer(trial_, use_y=use_y, forward_only=True)
         inferred_z = gamma.sum(axis=(0, 1)).T
         trial[:, (dim_s + dim_y):] = torch.tensor(inferred_z)
@@ -316,7 +321,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                          epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None, p_stay_R=None,
-                         task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
+                         task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], mixed_train=False,
                          z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                          use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False,
                          verbose=True, ckpt_step=10,
@@ -366,7 +371,9 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
     optim_kwargs = dict(lr=lr, weight_decay=weight_decay)
     optimizer = get_optimizer(model, optim, **optim_kwargs)
     lr_z = lr * torch.ones(len(z_list)).to(device)
-    for itask, task in enumerate(task_list):
+    for task in task_list:
+        if mixed_train:
+            task = 'all'
         if reset_optim:
             optimizer = get_optimizer(model, optim, **optim_kwargs)
         for iter in range(num_iter):
@@ -374,12 +381,13 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
             #################################################
             if use_task_model:
                 if batch_size * (iter + 1) <= task_model_ntrials:
-                    for trial in tr_dataset.trials:
-                        trial_ = (itask, None, {'s': trial[:, :dim_s].numpy(),
-                                                'y': trial[:, dim_s:(dim_s + dim_y)].numpy()})
+                    for itrial in range(len(tr_dataset)):
+                        trial = tr_dataset.trials[itrial]
+                        trial_ = (tr_dataset.gdth_c[itrial], None,
+                                  {'s': trial[:, :dim_s].numpy(), 'y': trial[:, dim_s:(dim_s + dim_y)].numpy()})
                         task_model.dynamic_initialize_W(trial_)
                         task_model.learn_single_trial(trial_)
-                max_error = update_inferred_z(tr_dataset, itask, task_model, use_y=True)
+                max_error = update_inferred_z(tr_dataset, task_model, use_y=True)
                 if verbose and (iter in [0, 1, num_iter - 1]):
                     print(f'task {task}, iter {iter + 1}, max inference error: {max_error:.4f}', flush=True)
             #################################################
@@ -415,7 +423,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                 if use_task_model:
                     for itask_ts, task_ts in enumerate(task_list):
                         ts_dataset = ts_data_loaders[itask_ts].dataset
-                        max_error = update_inferred_z(ts_dataset, itask_ts, task_model, use_y=False)
+                        max_error = update_inferred_z(ts_dataset, task_model, use_y=False)
                         ts_err_arr[itask_ts].append(max_error)
                         if verbose:
                             print(f'test max inference error on task {task_ts}: {max_error:.4f}', flush=True)
@@ -656,7 +664,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                              epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
-                             task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
+                             task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], mixed_train=False,
                              verbose=True, ckpt_step=10, alpha_cov=0.001,
                              save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
@@ -694,6 +702,8 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
     ###########################################
     optimizer = eval(optim)(model.named_parameters(), lr=lr, weight_decay=weight_decay)
     for itask, task in enumerate(task_list):
+        if mixed_train:
+            task = 'all'
         if reset_optim:
             optimizer = eval(optim)(model.named_parameters(), lr=lr, weight_decay=weight_decay)
         for i_iter in range(num_iter):
