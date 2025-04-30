@@ -321,7 +321,7 @@ def make_dm_response_anti_epoch(x: dict, Te: int, sig_s: float, sig_y: float, d_
 
     return {'s':make_bimodal_input(
         stim=0, second_stim=1, d_stim=np.pi,  # the stimuli are fixed at 0 and pi
-        fixation=1, Te=Te, sig_s=sig_s, 
+        fixation=0, Te=Te, sig_s=sig_s,
         contrast=contrast, second_stim_contrast=second_contrast),
             'y':make_target_output(response=1 - x['theta_task'] % 2, d_stim=np.pi,
                                    fixation=0,

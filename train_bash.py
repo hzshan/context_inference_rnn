@@ -35,7 +35,8 @@ def cxtrnn_config():
                   optim='Adam', reset_optim=False, lr=1e-3, weight_decay=0,
                   batch_size=256, num_iter=1000, n_trials_ts=200,
                   sig_s=0.01, p_stay=0.9, min_Te=5, nx=8, d_stim=2*np.pi/8,
-                  epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None,
+                  epoch_type=1, fixation_type=1, info_type='z',
+                  min_Te_R=None, p_stay_R=None,
                   task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
                   z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
                   use_task_model=False, task_model_ntrials=np.inf,
@@ -46,15 +47,15 @@ def cxtrnn_config():
         #################
         'gating_type': [3],
         'fixation_type': [2],
-        # 'w_fix': [0.2],
-        'min_Te_R': [10],
-        'p_stay_R': [0.95],
-        # 'nonlin': ['relu'], # softplus
+        'w_fix': [0.2],
+        'nonlin': ['tanh', 'relu'],
+        # 'min_Te_R': [10],
+        # 'p_stay_R': [0.95],
         ######################
-        'task_list': [['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
-                      ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
-        # 'task_list': [['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-        #               ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
+        # 'task_list': [['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+        #               ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M']],
+        'task_list': [['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+                      ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
         'z_list': [['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A', 'DM_S', 'DM_R_P', 'DM_R_A']],
         # 'task_list': [['PRO_DM', 'ANTI_DM']],
         # 'z_list': [['F/D', 'DM_S', 'DM_R_P', 'DM_R_A']],
@@ -72,7 +73,7 @@ def cxtrnn_config():
         # 'use_task_model': [True],
         # 'task_model_ntrials': [512],
         ############################
-        'seed': [0],
+        'seed': [3, 4],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -95,6 +96,7 @@ def cxtrnn_config():
         save_name += ('_pstay' + str(config['p_stay'])) if config['p_stay'] != 0.9 else ''
         save_name += ('_minT' + str(config['min_Te'])) if config['min_Te'] != 5 else ''
         save_name += ('_minTR' + str(config['min_Te_R'])) if config['min_Te_R'] is not None else ''
+        save_name += ('_pstayR' + str(config['p_stay_R'])) if config['p_stay_R'] is not None else ''
         save_name += ('_z' + str(config['epoch_type'])) if config['epoch_type'] != 1 else ''
         save_name += ('_fix' + str(config['fixation_type'])) if config['fixation_type'] != 1 else ''
         save_name += ('_nx' + str(config['nx'])) if config['nx'] != 8 else ''
@@ -122,7 +124,7 @@ def leakyrnn_config():
                  optim='AdamWithProj', reset_optim=False, use_proj=False, lr=1e-3, weight_decay=0,
                  batch_size=256, num_iter=1000, n_trials_ts=200, n_trials_vl=200,
                  sig_s=0.01, p_stay=0.9, min_Te=5, nx=8, d_stim=2*np.pi/8,
-                 epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None,
+                 epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
                  task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], z_list=None,
                  verbose=True, ckpt_step=10, alpha_cov=0.001,
                  save_dir=None, retrain=True, save_ckpt=False,
@@ -133,10 +135,10 @@ def leakyrnn_config():
         'nonlin': ['tanh', 'relu'],
         'task_list': [['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
                       ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM']],
-        'lr': [0.001, 0.01],
+        'lr': [0.01],
         'weight_decay': [1e-5],
         'use_proj': [True],
-        'seed': [0],
+        'seed': [1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -154,6 +156,7 @@ def leakyrnn_config():
         save_name += ('_pstay' + str(config['p_stay'])) if config['p_stay'] != 0.9 else ''
         save_name += ('_minT' + str(config['min_Te'])) if config['min_Te'] != 5 else ''
         save_name += ('_minTR' + str(config['min_Te_R'])) if config['min_Te_R'] is not None else ''
+        save_name += ('_pstayR' + str(config['p_stay_R'])) if config['p_stay_R'] is not None else ''
         save_name += ('_fix' + str(config['fixation_type'])) if config['fixation_type'] != 1 else ''
         save_name += ('_nx' + str(config['nx'])) if config['nx'] != 8 else ''
         save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 1000 else ''
@@ -167,7 +170,7 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = cxtrnn_config()
+    configs, save_names = leakyrnn_config()
     for config, save_name in zip(configs, save_names):
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)
