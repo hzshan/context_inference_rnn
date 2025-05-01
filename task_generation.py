@@ -611,6 +611,9 @@ def generate_trials(task_list: list,
     epoch_list = list(set(epoch_list))
 
     n_trials_per_task = int(n_trials / nc)
+    if n_trials_per_task < nx:
+        print('Warning: not enough trials per task to cover all values' \
+        'of task variables. This is known to cause problems in the inference.')
     
     if trial_order == 'interleaved':
         task_ids = np.mod(np.arange(n_trials), nc)
