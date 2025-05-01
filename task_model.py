@@ -245,18 +245,29 @@ def dynamic_initialize_W(trial,
         w_fixate: the fixation/delay epoch for the current task
         match_criterion: distance threshold for matching clusters
     """
+
+    DEBUG_MODE = False
     
-    # get some dimensions
-    nx, nz, d = curr_W.shape
+    # get some dimensions for sanity checks
+    nx, nz, _ = curr_W.shape
+
+    
+    
     nc = len(num_epochs_each_task)
     assert familiar_cx.shape == (nc, nx)
     assert familiar_xz.shape == (nx, nz)
     
-    # hard code the 0th epoch as the F/D epoch
+    # hard code the 0th epoch as the F/D epoch. This just breaks the permutation
+    # symmetry in a consistent manner
     curr_W[:, 0, :] = w_fixate
     familiar_xz[:, 0] = 1
 
     c, _, sy = trial
+
+    if DEBUG_MODE:
+        _, debug_true_x, _ = trial
+        print(f'c: {c}, true x: {debug_true_x}')
+
     obs = np.concatenate([sy['s'], sy['y']], axis=1)
 
     # do k-means clustering; sort the clusters in order of first appearance.
@@ -274,31 +285,66 @@ def dynamic_initialize_W(trial,
     # for each x, how many clusters can be explained by it (under various z)?
     # "explained" as in the cluster matches the w_{x,z} for some z.
     n_clusters_matched_to_this_x = np.zeros(nx)
+    matched_xs_for_each_cluster = []
 
     for w in non_fixate_clusters:
         matched_xs, matched_zs = _check_for_matching_w(
             curr_W, w, match_criterion)
         n_clusters_matched_to_this_x[matched_xs] += 1
 
+        if len(matched_xs) > 0:
+            matched_xs_for_each_cluster.append(matched_xs)
+    
+
     all_matched = False
     # there exists an x that can explain all clusters
     if np.max(n_clusters_matched_to_this_x) == len(non_fixate_clusters):
-        putative_x = np.where(n_clusters_matched_to_this_x == len(non_fixate_clusters))[0][0]
+        putative_x = np.where(
+            n_clusters_matched_to_this_x == len(non_fixate_clusters))[0][0]
         all_matched = True
 
-    # some of the clusters have matches. Use these to figure out the putative x.
-    # To be a possible candidate putative x, it must have some matches and also
-    # not seen before.
+        if DEBUG_MODE:
+            print('all clusters matched to the putative x.')
+
     elif np.max(n_clusters_matched_to_this_x) > 0:
-         
-        candidate_putative_x = (n_clusters_matched_to_this_x == np.max(n_clusters_matched_to_this_x))
-        candidate_putative_x *= (familiar_cx[c] == 0)
-        putative_x = np.where(candidate_putative_x)[0][0]
+        # some of the clusters have matches. Use these to figure out the putative x.
+        # To be a candidate putative x, it must:
+        # (1) explain some of this trial's clusters
+        # (2) not be familiar with this trial's c
+        
+        candidate_putative_x = []
+        for _x in matched_xs_for_each_cluster:
+
+            _x = _x[0]
+            if n_clusters_matched_to_this_x[_x] == np.max(n_clusters_matched_to_this_x) and familiar_cx[c, _x] == 0:
+                candidate_putative_x.append(_x)
+
+        if DEBUG_MODE:
+            print('Some xs matched to some clusters. Candidate putative x: ', candidate_putative_x)
+
+        # there could be multiple candidates. In this case, pick the one that
+        # explains the cluster that appeared first in the sequence. in principle
+        # there is not one right answer here (different putative x assignments
+        # may give rise to the same likelihood). This just breaks the symmetry
+        # in a consistent manner.
+
+        assert len(candidate_putative_x) > 0, \
+            'No candidate putative x found. This should not happen. Most' \
+            'likely because a previously seen epoch is not correctly marked as' \
+            f'familiar. {matched_xs_for_each_cluster}' 
+        putative_x = candidate_putative_x[0]
+
+
 
     # none of the clusters matched anything in W. In which case we arbitrarily
-    # assign an unseen x
+    # assign an unseen x. We just assign the first unfamiliar x under this c.
+    # Again, no right answer here. just break the symmetry in a consistent manner.
     else:
         putative_x = np.where(familiar_cx[c] == 0)[0][0]
+        if DEBUG_MODE: print('no clusters matched, assigning a new x')
+
+    if DEBUG_MODE:
+        print(f'putative x: {putative_x}')
 
     # for the assigned putative x, list the unexplained clusters
     if not all_matched:
@@ -309,16 +355,23 @@ def dynamic_initialize_W(trial,
             if len(matched_zs) == 0:
                 unmatched_clusters.append(center)
 
-        
         if len(unmatched_clusters) == 0:
             pass
         else:
 
             # assign the unmatched clusters to the next available z slots for 
             # the putative x
+            if DEBUG_MODE:
+                print(f'Trying to initialize {len(unmatched_clusters)} unmatched clusters as new (z, x) pairs')
+
             available_z_slots = np.where(familiar_xz[putative_x] == 0)[0]
 
-            assert len(available_z_slots) >= len(unmatched_clusters)
+            assert len(available_z_slots) >= len(unmatched_clusters), \
+                'Not enough available z slots for the putative x. ' \
+                'This should not happen. This is likely because a previously' \
+                'seen epoch is not correctly marked as familiar and' \
+                'incorrectly marked as "unmatched". Try setting DEBUG_MODE=True'
+
             for j, w in enumerate(unmatched_clusters):
                 curr_W[putative_x, available_z_slots[j]] = w
                 familiar_xz[putative_x, available_z_slots[j]] = 1
