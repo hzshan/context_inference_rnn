@@ -594,9 +594,9 @@ def generate_trials(task_list: list,
                     p_stay: float,
                     min_Te: int,
                     d_stim=None,
-                    trial_order='interleaved'):
-    
-    #TODO: add options to change ordering of trials
+                    trial_order='interleaved',
+                    random_x_order=False):
+
 
     if d_stim is None:
         if nx == 2:
@@ -618,11 +618,19 @@ def generate_trials(task_list: list,
         assert trial_order == 'blocked'
         task_ids = np.repeat(np.arange(nc), n_trials_per_task)
 
+    x_each_task = np.tile(
+        np.arange(nx), int(np.ceil(n_trials_per_task / nx)))[:n_trials_per_task]
+    full_x_list = []
+    for itask in range(nc):
+        if random_x_order:
+            np.random.shuffle(x_each_task)
+        full_x_list += list(x_each_task)
+
     trials = []
     
     for itrial in range(n_trials):
         c = task_ids[itrial]
-        x = itrial % nx
+        x = full_x_list[itrial]
         sy, _ = compose_trial(
             task_dict[task_list[c]],
             {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te, d_stim=d_stim)
