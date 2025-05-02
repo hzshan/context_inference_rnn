@@ -18,14 +18,13 @@ def task_epoch(task, epoch_type=1):
     if epoch_type == 1:
         task_dict = {
             'PRO_D': 'F/D->S->R_P',
-            # 'PRO_S': 'F/D->S->R_M_P',
+            'PRO_S': 'F/D->S->R_M_P',
             'PRO_M': 'F/D->S->F/D->R_M_P',
-            # 'PRO_R': 'F/D->R_P',
+            'PRO_R': 'F/D->R_P',
             'ANTI_D': 'F/D->S->R_A',
-            #'ANTI_S': 'F/D->S->R_M_A',
+            'ANTI_S': 'F/D->S->R_M_A',
             'ANTI_M': 'F/D->S->F/D->R_M_A',
-            # 'ANTI_R': 'F/D->R_A',
-            #'ORDER': 'F/D->S->S_B->R_M_P',
+            'ANTI_R': 'F/D->R_A',
             'PRO_DM': 'F/D->DM_S->DM_R_P',
             'ANTI_DM': 'F/D->DM_S->DM_R_A',
         }
@@ -39,13 +38,21 @@ def task_epoch(task, epoch_type=1):
             'ANTI_S': 'F->S->R_M_A',
             'ANTI_M': 'F->S->D->R_M_A',
             'ANTI_R': 'F->R_A',
-            'ORDER': 'F->S->S_B->R_M_P',
             'PRO_DM': 'F->DM_S->DM_R_P',
             'ANTI_DM': 'F->DM_S->DM_R_A',
         }
     else:
         raise NotImplementedError
     return task_dict[task]
+
+
+def get_z_list(task_list, epoch_type):
+    epoch_list = []
+    for task in task_list:
+        epoch_str = task_epoch(task, epoch_type=epoch_type)
+        epoch_list += epoch_str.split('->')
+    z_list = list(dict.fromkeys(epoch_list))
+    return z_list
 
 
 class CXTRNN(nn.Module):
@@ -313,6 +320,16 @@ def get_optimizer(model, optim, lr=0.01, weight_decay=0):
     return optimizer
 
 
+def check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device):
+    if task == 'all':
+        gdth_occurred_z = torch.ones(len(z_list)).to(device)
+    else:
+        gdth_task_epochs = task_epoch(task, epoch_type=epoch_type).split('->')
+        gdth_occurred_z = torch.tensor([cur_z in gdth_task_epochs for cur_z in z_list]).float().to(device)
+    assert torch.all((occurred_z == gdth_occurred_z).bool())
+    return
+
+
 def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, init_scale=None,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh',
                          sig_r=0, w_fix=1, n_skip=0, reg_act=0,
@@ -321,13 +338,13 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                          batch_size=256, num_iter=500, n_trials_ts=200,
                          sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                          epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None, p_stay_R=None,
-                         task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], mixed_train=False,
-                         z_list=['F/D', 'S', 'R_P', 'R_M_P', 'R_A', 'R_M_A'],
+                         task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], mixed_train=False, z_list=None,
                          use_task_model=False, task_model_ntrials=np.inf, frz_io_layer=False,
                          verbose=True, ckpt_step=10,
                          save_dir=None, retrain=True, save_ckpt=False, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    z_list = get_z_list(task_list, epoch_type) if z_list is None else z_list
     rank = len(z_list) * gating_type if isinstance(gating_type, int) else rank
     model = CXTRNN(dim_s=dim_s, dim_y=dim_y, dim_z=len(z_list), rank=rank,
                    dim_hid=dim_hid, alpha=alpha, init_scale=init_scale,
@@ -407,13 +424,16 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                 optimizer.zero_grad()
                 loss.backward()
                 if optim == 'AdamGated':
-                    wd_prob_z = (z.sum((0, 1)) / lengths.sum() >= wd_z_eps).float()
-                    optimizer.step(wd_prob_z=wd_prob_z, gating_type=gating_type, lr_z=lr_z)
+                    occurred_z = (z.sum((0, 1)) / lengths.sum() >= wd_z_eps).float()
+                    check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device)
+                    optimizer.step(wd_occurred_z=occurred_z, gating_type=gating_type, lr_z=lr_z)
                 else:
                     optimizer.step()
             if iter == num_iter - 1:
-                lr_prob_z = torch.tensor(np.concatenate(tr_dataset.gdth_z, axis=0).mean(0) >= lr_z_eps).float()
-                lr_z = lr_z * gamma ** lr_prob_z.to(device)
+                occurred_z = np.concatenate([trial[:, (dim_s + dim_y):] for trial in tr_dataset.trials], axis=0).mean(0)
+                occurred_z = torch.tensor(occurred_z >= lr_z_eps).float().to(device)
+                check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device)
+                lr_z = lr_z * gamma ** occurred_z
             if (iter + 1) % ckpt_step == 0:
                 tr_loss_arr.append(loss.item())
                 if verbose:
@@ -467,7 +487,7 @@ class AdamGated(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     @torch.no_grad()
-    def step(self, closure=None, wd_prob_z=None, gating_type=None, lr_z=None):
+    def step(self, closure=None, wd_occurred_z=None, gating_type=None, lr_z=None):
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -482,13 +502,13 @@ class AdamGated(torch.optim.Optimizer):
                 grad = p.grad
                 # ===== weight decay =====
                 if wd != 0:
-                    if wd_prob_z is None:
+                    if wd_occurred_z is None:
                         grad = grad.add(p, alpha=wd)
                     else:
-                        if self._name[p] in ['W_in', 'b_in', 'W_out', 'b_out'] and p.shape[0] == len(wd_prob_z):
-                            grad = grad + wd * p * wd_prob_z.view(-1, *[1] * (p.ndim - 1))
+                        if self._name[p] in ['W_in', 'b_in', 'W_out', 'b_out'] and p.shape[0] == len(wd_occurred_z):
+                            grad = grad + wd * p * wd_occurred_z.view(-1, *[1] * (p.ndim - 1))
                         elif self._name[p] in ['U', 'V'] and isinstance(gating_type, int):
-                            grad = grad + wd * p * wd_prob_z[:, None].expand(-1, gating_type).flatten()
+                            grad = grad + wd * p * wd_occurred_z[:, None].expand(-1, gating_type).flatten()
                         else:
                             grad = grad.add(p, alpha=wd)
                 # ===== state & moments =====
@@ -753,64 +773,64 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
     return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
 
-if __name__ == '__main__':
-    import argparse
-    import platform
-    from train_config import load_config
-
-    if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_v1_gating3_ioZ_a0pt1_nh256_wfix0pt2_PdPmAdAmPdmAdm_fix2_AdamGated_wdEps0pt001_lrEps0pt001_gamma0pt5_wd1e-05_sd0'
-        config = load_config(save_name)
-        config['retrain'] = False
-    else:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--save_name", help="save_name", type=str, default="")
-        args = parser.parse_args()
-        save_name = args.save_name
-        config = load_config(save_name)
-    train_fn = eval(config.get('train_fn', 'train_cxtrnn_sequential'))
-    model, tr_loss_arr, ts_loss_arr, ts_perf_arr = train_fn(**config)
-    ####################################################
-    fig, axes = plt.subplots(3, 1, figsize=(4, 6), sharex=True, sharey=False)
-    axes[0].plot(tr_loss_arr, color='gray')
-    axes[0].set_ylabel('training loss')
-    for iax in [1, 2]:
-        ts_arr = [ts_loss_arr, ts_perf_arr][iax - 1]
-        ylabel = ['test loss', 'test perf'][iax - 1]
-        for itask in range(len(config['task_list'])):
-            axes[iax].plot(ts_arr[itask], color=f'C{itask}', label=config['task_list'][itask])
-        axes[iax].legend(loc='center left', bbox_to_anchor=(1, 0.5))
-        axes[iax].set_ylabel(ylabel)
-    # axes[1].set_ylim([-0.05, 0.5])
-    if config['save_dir'] is not None:
-        fig.savefig(config['save_dir'] + '/loss.png', bbox_inches='tight')
-    ####################################################
-    dim_s = config.get('dim_s', 3)
-    dim_y = config.get('dim_y', 3)
-    fig, axes = plt.subplots(dim_s + dim_y, len(config['task_list']),
-                             figsize=(2 * len(config['task_list']), dim_s + dim_y),
-                             sharey=True, sharex='col')
-    if len(axes.shape) == 1:
-        axes = axes[:, None]
-    for itask, task in enumerate(config['task_list']):
-        epoch_str = task_epoch(task, epoch_type=config['epoch_type'])
-        x = np.random.randint(config['nx'])
-        sig_y = 0
-        syz = generate_trial(task, x, config['z_list'], config['task_list'], config['sig_s'], sig_y,
-                             config['p_stay'], config['min_Te'], config['d_stim'],
-                             config['epoch_type'], config['fixation_type'],
-                             info_type=config.get('info_type', 'z'),
-                             min_Te_R=config.get('min_Te_R', None), p_stay_R=config.get('p_stay_R', None))
-        syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
-        s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-        with torch.no_grad():
-            out, _ = model(s, z)
-        ########### plot #########
-        axes[0, itask].set_title(task)
-        for iax in range(dim_s):
-            axes[iax, itask].plot(s[:, :, iax].cpu().numpy())
-        for iax in range(dim_y):
-            axes[iax + dim_s, itask].plot(out[:, :, iax].cpu().numpy())
-            axes[iax + dim_s, itask].plot(y[:, :, iax].cpu().numpy())
-    if config['save_dir'] is not None:
-        fig.savefig(config['save_dir'] + '/example.png', bbox_inches='tight')
+# if __name__ == '__main__':
+#     import argparse
+#     import platform
+#     from train_config import load_config
+#
+#     if platform.system() == 'Windows':
+#         save_name = 'cxtrnn_seq_v1_gating3_ioZ_a0pt1_nh256_wfix0pt2_PdPmAdAmPdmAdm_fix2_AdamGated_wdEps0pt001_lrEps0pt001_gamma0pt5_wd1e-05_sd0'
+#         config = load_config(save_name)
+#         config['retrain'] = False
+#     else:
+#         parser = argparse.ArgumentParser()
+#         parser.add_argument("--save_name", help="save_name", type=str, default="")
+#         args = parser.parse_args()
+#         save_name = args.save_name
+#         config = load_config(save_name)
+#     train_fn = eval(config.get('train_fn', 'train_cxtrnn_sequential'))
+#     model, tr_loss_arr, ts_loss_arr, ts_perf_arr = train_fn(**config)
+#     ####################################################
+#     fig, axes = plt.subplots(3, 1, figsize=(4, 6), sharex=True, sharey=False)
+#     axes[0].plot(tr_loss_arr, color='gray')
+#     axes[0].set_ylabel('training loss')
+#     for iax in [1, 2]:
+#         ts_arr = [ts_loss_arr, ts_perf_arr][iax - 1]
+#         ylabel = ['test loss', 'test perf'][iax - 1]
+#         for itask in range(len(config['task_list'])):
+#             axes[iax].plot(ts_arr[itask], color=f'C{itask}', label=config['task_list'][itask])
+#         axes[iax].legend(loc='center left', bbox_to_anchor=(1, 0.5))
+#         axes[iax].set_ylabel(ylabel)
+#     # axes[1].set_ylim([-0.05, 0.5])
+#     if config['save_dir'] is not None:
+#         fig.savefig(config['save_dir'] + '/loss.png', bbox_inches='tight')
+#     ####################################################
+#     dim_s = config.get('dim_s', 3)
+#     dim_y = config.get('dim_y', 3)
+#     fig, axes = plt.subplots(dim_s + dim_y, len(config['task_list']),
+#                              figsize=(2 * len(config['task_list']), dim_s + dim_y),
+#                              sharey=True, sharex='col')
+#     if len(axes.shape) == 1:
+#         axes = axes[:, None]
+#     for itask, task in enumerate(config['task_list']):
+#         epoch_str = task_epoch(task, epoch_type=config['epoch_type'])
+#         x = np.random.randint(config['nx'])
+#         sig_y = 0
+#         syz = generate_trial(task, x, config['z_list'], config['task_list'], config['sig_s'], sig_y,
+#                              config['p_stay'], config['min_Te'], config['d_stim'],
+#                              config['epoch_type'], config['fixation_type'],
+#                              info_type=config.get('info_type', 'z'),
+#                              min_Te_R=config.get('min_Te_R', None), p_stay_R=config.get('p_stay_R', None))
+#         syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
+#         s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+#         with torch.no_grad():
+#             out, _ = model(s, z)
+#         ########### plot #########
+#         axes[0, itask].set_title(task)
+#         for iax in range(dim_s):
+#             axes[iax, itask].plot(s[:, :, iax].cpu().numpy())
+#         for iax in range(dim_y):
+#             axes[iax + dim_s, itask].plot(out[:, :, iax].cpu().numpy())
+#             axes[iax + dim_s, itask].plot(y[:, :, iax].cpu().numpy())
+#     if config['save_dir'] is not None:
+#         fig.savefig(config['save_dir'] + '/example.png', bbox_inches='tight')
