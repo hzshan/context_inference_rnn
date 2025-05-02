@@ -50,21 +50,18 @@ def cxtrnn_config():
         ######################
         'task_list': [
             ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
-            # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
+            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+            ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
         # 'mixed_train': [True],
-        #######################
-        'wd_z_eps': [1e-3],
-        'lr_z_eps': [1e-3],
         ##########################
         'save_ckpt': [False],
-        'ckpt_step': [1],
-        'num_iter': [30],
+        # 'ckpt_step': [1],
+        # 'num_iter': [30],
         ###########################
-        # 'use_task_model': [True],
-        # 'task_model_ntrials': [512],
+        'use_task_model': [True],
+        'task_model_ntrials': [512],
         ############################
         'seed': [0],
     }
@@ -165,7 +162,7 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = leakyrnn_config()
+    configs, save_names = cxtrnn_config()
     for config, save_name in zip(configs, save_names):
         if os.path.isfile(f'./saved_models/{save_name}/model.pth'):
             config['retrain'] = False
