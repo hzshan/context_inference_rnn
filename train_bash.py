@@ -123,7 +123,7 @@ def leakyrnn_config():
                  save_dir=None, retrain=True, save_ckpt=False,
                  train_fn='train_leakyrnn_sequential')
     config_ranges = {
-        'nonlin': ['tanh', 'relu'], #'tanh', 'relu'
+        'nonlin': ['relu'], #'tanh', 'relu'
         'task_list': [
             # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
@@ -134,11 +134,11 @@ def leakyrnn_config():
         # 'use_proj': [True],
         ######################
         'use_ewc': [True],
-        'ewc_lambda': [5e4, 1e5],
+        'ewc_lambda': [1e6, 1e7],
         ######################
         # 'ckpt_step': [1],
         # 'num_iter': [30],
-        'seed': [0, 1, 2],   #, 1, 2, 3, 4
+        'seed': [0, 1],   #, 1, 2, 3, 4
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])

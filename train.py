@@ -235,8 +235,8 @@ class TaskDataset(Dataset):
                  epoch_type=1, fixation_type=1, info_type='z', min_Te_R=None, p_stay_R=None):
         self.dim_s = dim_s
         self.dim_y = dim_y
+        self.fixation_type = fixation_type
         self.trials = []
-        self.gdth_z = []
         self.gdth_c = []
         for i_trial in range(n_trials):
             x = np.random.randint(nx)
@@ -245,7 +245,6 @@ class TaskDataset(Dataset):
                                  epoch_type, fixation_type, info_type=info_type,
                                  min_Te_R=min_Te_R, p_stay_R=p_stay_R)
             self.trials.append(torch.tensor(syz, dtype=torch.float32))
-            self.gdth_z.append(syz[:, (dim_s + dim_y):])
             self.gdth_c.append(task_list.index(cur_task))
 
     def __len__(self):
@@ -273,55 +272,55 @@ def set_deterministic(seed):
 
 
 @torch.no_grad()
-def evaluate(model, ts_data_loaders, loss_kwargs):
-    device = next(model.parameters()).device
-    ts_loss, ts_perf = [], []
-    for ts_data_loader in ts_data_loaders:
-        cur_ts_loss, cur_ts_perf = [], []
-        dim_s = ts_data_loader.dataset.dim_s
-        dim_y = ts_data_loader.dataset.dim_y
-        for ib, cur_batch in enumerate(ts_data_loader):
-            syz, lengths = cur_batch
-            syz = syz.to(device)
-            s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-            out, states = model(s, z)
-            loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
-            cur_ts_loss.append(loss.item())
-            perf = batch_performance(out, y, lengths)
-            cur_ts_perf.append(perf.float().mean().item())
-        ts_loss.append(np.mean(cur_ts_loss))
-        ts_perf.append(np.mean(cur_ts_perf))
-    return ts_loss, ts_perf
+def task_model_inference(task_model, c, obs):
+    device = obs.device
+    W = torch.tensor(task_model.W, device=device).float()
+    M = torch.tensor(task_model.M, device=device).float()
+    p0_z = torch.tensor(task_model.p0_z, device=device).float()
+    sigma = task_model.sigma
+    ###############
+    nc, nx = M.shape[0], W.shape[0]
+    prior_cx = torch.zeros((nc, nx), device=device)
+    prior_cx[c] = 1
+    prior_cx /= prior_cx.sum()
+    ###############
+    obs = obs.to(device)
+    nT, nb, k = obs.shape
+    obs = obs.permute(1, 0, 2) # nb, nT, k
+    ###############
+    # nb, nx, nz, nT
+    sq_dist = torch.sum(torch.square(W[None, :, :, None, :k] - obs[:, None, None, :, :]), dim=-1)
+    log_likes = - torch.log(torch.tensor(2 * torch.pi * sigma ** 2).float()) * k / 2 - sq_dist / (2 * sigma ** 2)
+    ################
+    nz = M.shape[1]
+    alpha = torch.zeros((nb, nc, nx, nz, nT), device=device)
+    alpha[..., 0] = torch.log(p0_z) + log_likes[:, None, :, :, 0]
+    for it in range(nT - 1):
+        m = torch.max(alpha[..., it], dim=-1, keepdim=True).values
+        alpha[..., it + 1] = torch.log(torch.einsum('bcxi,cij->bcxj', torch.exp(alpha[..., it] - m),
+                                        M)) + m + log_likes[:, None, :, :, it + 1]
+    gamma = alpha + torch.log(prior_cx[None, :, :, None, None])
+    gamma = gamma - torch.logsumexp(gamma, dim=(1, 2, 3), keepdim=True)
+    gamma = torch.exp(gamma)
+    inferred_z = gamma.sum(dim=(1, 2))  # nb, nz, nT
+    inferred_z = inferred_z.permute(2, 0, 1) # nT, nb, nz
+    return inferred_z
 
 
-def update_inferred_z(dataset, task_model, use_y=True, fixation_type=1):
-    max_error = []
-    dim_s = dataset.dim_s
-    dim_y = dataset.dim_y
-    for itrial in range(len(dataset)):
-        trial = dataset.trials[itrial]
-        s_ = deepcopy(trial[:, :dim_s].numpy())
-        y_ = deepcopy(trial[:, dim_s:(dim_s + dim_y)].numpy())
-        if fixation_type == 2:
-            s_[:, -1] = 1 - s_[:, -1]
-            y_[:, -1] = 1 - y_[:, -1]
-        trial_ = (dataset.gdth_c[itrial], None, {'s': s_, 'y': y_})
-        gamma, _ = task_model.infer(trial_, use_y=use_y, forward_only=True)
-        inferred_z = gamma.sum(axis=(0, 1)).T
-        trial[:, (dim_s + dim_y):] = torch.tensor(inferred_z)
-        ###### check error #######
-        gdth_z = dataset.gdth_z[itrial]
-        max_error.append(np.max(np.abs(dataset.trials[itrial][:, (dim_s + dim_y):].numpy() - gdth_z)))
-    max_error = np.mean(max_error)
-    return max_error
-
-
-def get_optimizer(model, optim, lr=0.01, weight_decay=0):
-    if optim == 'AdamGated':
-        optimizer = AdamGated(model.named_parameters(), lr=lr, weight_decay=weight_decay)
-    else:
-        optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
-    return optimizer
+@torch.no_grad()
+def update_inferred_z(itask, s, y, z, lengths, task_model, use_y=True, fixation_type=1):
+    if fixation_type == 2:
+        s = s.clone().detach()
+        y = y.clone().detach()
+        s[..., -1] = 1 - s[..., -1]  # flip back for task model
+        y[..., -1] = 1 - y[..., -1]
+    obs = torch.cat((s, y), dim=-1) if use_y else s
+    inferred_z = task_model_inference(task_model, itask, obs)
+    seq_len, batch_size, _ = s.shape
+    mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
+    inferred_z = inferred_z * mask[..., None]
+    max_error = torch.max(torch.abs(inferred_z - z) * mask[..., None]).item()
+    return inferred_z, max_error
 
 
 def check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device):
@@ -332,6 +331,46 @@ def check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device):
         gdth_occurred_z = torch.tensor([cur_z in gdth_task_epochs for cur_z in z_list]).float().to(device)
     assert torch.all((occurred_z == gdth_occurred_z).bool())
     return
+
+
+@torch.no_grad()
+def evaluate(model, ts_data_loaders, loss_kwargs, task_model=None):
+    device = next(model.parameters()).device
+    ts_loss, ts_perf, ts_err = [], [], []
+    for itask_ts, ts_data_loader in enumerate(ts_data_loaders):
+        cur_ts_loss, cur_ts_perf, cur_ts_err = [], [], []
+        dim_s = ts_data_loader.dataset.dim_s
+        dim_y = ts_data_loader.dataset.dim_y
+        fixation_type = ts_data_loader.dataset.fixation_type
+        for ib, cur_batch in enumerate(ts_data_loader):
+            syz, lengths = cur_batch
+            syz = syz.to(device)
+            s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+            ################################
+            if task_model is not None:
+                z, max_error = update_inferred_z(itask_ts, s, y, z, lengths, task_model,
+                                                 use_y=False, fixation_type=fixation_type)
+                cur_ts_err.append(max_error)
+            else:
+                cur_ts_err.append(-1)
+            ################################
+            out, states = model(s, z)
+            loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
+            cur_ts_loss.append(loss.item())
+            perf = batch_performance(out, y, lengths)
+            cur_ts_perf.append(perf.float().mean().item())
+        ts_loss.append(np.mean(cur_ts_loss))
+        ts_perf.append(np.mean(cur_ts_perf))
+        ts_err.append(np.mean(cur_ts_err))
+    return ts_loss, ts_perf, ts_err
+
+
+def get_optimizer(model, optim, lr=0.01, weight_decay=0):
+    if optim == 'AdamGated':
+        optimizer = AdamGated(model.named_parameters(), lr=lr, weight_decay=weight_decay)
+    else:
+        optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
+    return optimizer
 
 
 def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, init_scale=None,
@@ -372,27 +411,28 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
         ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
         ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
         ts_data_loaders.append(ts_data_loader)
-
-    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
-    ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
-    tr_loss_arr = [ts_loss[0]]
-    ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
-    ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
-    ckpt_list = [deepcopy(model.state_dict())]
     ###########################################
+    task_model = None
+    task_model_ckpt_list = []
     if use_task_model:
         n_epochs_each_task = [len(set(task_epoch(task, epoch_type=epoch_type).split('->'))) for task in task_list]
         w_fixate = make_delay_or_fixation_epoch({}, 1, 0, 0, d_stim=d_stim)
         w_fixate = np.concatenate([w_fixate['s'], w_fixate['y']], axis=1)
         task_model = TaskModel(nc=len(task_list), nz=len(z_list), nx=nx, sigma=sig_s, d=w_fixate.shape[-1],
                                n_epochs_each_task=n_epochs_each_task, w_fixate=w_fixate)
-        ts_err_arr = [[] for _ in range(len(task_list))]
-        task_model_ckpt_list = []
     ###########################################
+    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
+    ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model)
+    tr_loss_arr = [ts_loss[0]]
+    ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
+    ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
+    ts_err_arr = [[ts_err[itask]] for itask in range(len(task_list))]
+    ckpt_list = [deepcopy(model.state_dict())]
+    ############################################
     optim_kwargs = dict(lr=lr, weight_decay=weight_decay)
     optimizer = get_optimizer(model, optim, **optim_kwargs)
     lr_z = lr * torch.ones(len(z_list)).to(device)
-    for task in task_list:
+    for itask, task in enumerate(task_list):
         if mixed_train:
             task = 'all'
         if reset_optim:
@@ -406,15 +446,12 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                         trial = tr_dataset.trials[itrial]
                         s_ = deepcopy(trial[:, :dim_s].numpy())
                         y_ = deepcopy(trial[:, dim_s:(dim_s + dim_y)].numpy())
-                        if fixation_type == 2:
+                        if fixation_type == 2:  # flip back for task model
                             s_[:, -1] = 1 - s_[:, -1]
                             y_[:, -1] = 1 - y_[:, -1]
-                        trial_ = (tr_dataset.gdth_c[itrial], None, {'s': s_, 'y': y_})
+                        trial_ = (itask, None, {'s': s_, 'y': y_})
                         task_model.dynamic_initialize_W(trial_)
                         task_model.learn_single_trial(trial_)
-                max_error = update_inferred_z(tr_dataset, task_model, use_y=True, fixation_type=fixation_type)
-                if verbose and (i_iter in [0, 1, num_iter - 1]):
-                    print(f'task {task}, iter {i_iter + 1}, max inference error: {max_error:.4f}', flush=True)
             #################################################
             tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
             model.train()
@@ -427,6 +464,13 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                 syz, lengths = cur_batch
                 syz = syz.to(device)
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+                ##########################
+                if use_task_model:
+                    z, max_error = update_inferred_z(itask, s, y, z, lengths, task_model,
+                                                     use_y=True, fixation_type=fixation_type)
+                    if verbose and (i_iter in [0, 1, num_iter - 1]):
+                        print(f'task {task}, iter {i_iter + 1}, max inference error: {max_error:.4f}', flush=True)
+                ##########################
                 out, states = model(s, z)
                 loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
                 optimizer.zero_grad()
@@ -435,39 +479,29 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                     occurred_z = (z.sum((0, 1)) / lengths.sum() >= wd_z_eps).float()
                     check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device)
                     optimizer.step(wd_occurred_z=occurred_z, gating_type=gating_type, lr_z=lr_z)
+                    if i_iter == num_iter - 1:
+                        occurred_z = (z.sum((0, 1)) / lengths.sum() >= lr_z_eps).float()
+                        check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device)
+                        lr_z = lr_z * gamma ** occurred_z
                 else:
                     optimizer.step()
-            if i_iter == num_iter - 1:
-                occurred_z = np.concatenate([trial[:, (dim_s + dim_y):] for trial in tr_dataset.trials], axis=0).mean(0)
-                occurred_z = torch.tensor(occurred_z >= lr_z_eps).float().to(device)
-                check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device)
-                lr_z = lr_z * gamma ** occurred_z
             if (i_iter + 1) % ckpt_step == 0:
                 tr_loss_arr.append(loss.item())
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
-                # evaluate model on all tasks
-                ####################################################
-                if use_task_model:
-                    for itask_ts, task_ts in enumerate(task_list):
-                        ts_dataset = ts_data_loaders[itask_ts].dataset
-                        max_error = update_inferred_z(ts_dataset, task_model, use_y=False, fixation_type=fixation_type)
-                        ts_err_arr[itask_ts].append(max_error)
-                        if verbose:
-                            print(f'test max inference error on task {task_ts}: {max_error:.4f}', flush=True)
-                ####################################################
                 model.eval()
-                ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
+                ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
+                    ts_err_arr[itask_ts].append(ts_err[itask_ts])
                     if verbose:
                         print(f'test on task {task_ts}: loss {ts_loss[itask_ts]:.4f}, '
-                              f'perf {ts_perf[itask_ts]:.4f}', flush=True)
+                              f'perf {ts_perf[itask_ts]:.4f}',
+                              f'infr err {ts_err[itask_ts]:.4f}', flush=True)
                 if save_ckpt:
                     ckpt_list.append(deepcopy(model.state_dict()))
-                    if use_task_model:
-                        task_model_ckpt_list.append(deepcopy(task_model))
+                    task_model_ckpt_list.append(deepcopy(task_model))
 
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
@@ -479,7 +513,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
         np.save(save_dir + '/ts_perf.npy', ts_perf_arr)
         if use_task_model:
-            np.save(save_dir + '/ts_err.npy', ts_err_arr)
+            np.save(save_dir + '/ts_err.npy', np.array(ts_err_arr))
             with open(save_dir + '/task_model.pkl', 'wb') as f:
                 pickle.dump(task_model, f)
                 pickle.dump(task_model_ckpt_list, f)
@@ -744,7 +778,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
         ts_data_loaders.append(ts_data_loader)
 
     loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
-    ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
+    ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
@@ -788,7 +822,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
                 model.eval()
-                ts_loss, ts_perf = evaluate(model, ts_data_loaders, loss_kwargs)
+                ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
