@@ -629,13 +629,19 @@ def _online_learning_single_trial(
         W_update_mask = np.repeat(
             W_denom_this_trial[..., None] > w_update_threshold,
             S_Y_COMBINED_DIM, axis=-1)
+        
+        # only decay/update parts of M corresponding to the current c
+        M_update_mask = np.zeros((curr_M.shape[0],))
+        M_update_mask[c] = 1
+        M_update_mask = M_update_mask == 1
 
         # update parameters
         learned_M_this_trial = _update(
             curr_M,
             (transition_counts_this_trial /
              transition_counts_this_trial.sum(axis=-1, keepdims=True)),
-            lr)
+            lr, mask=M_update_mask)
+
         learned_W_this_trial = _update(
             curr_W,
             W_numer_this_trial / (W_denom_this_trial[..., None] + eps),
