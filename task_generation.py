@@ -470,11 +470,14 @@ def multivariate_log_likelihood(obs, mean, sigma):
     """
     computes the negative log likelihood of a multivariate normal distribution,
     given the observations x, the means and the standard deviation sigma
-    (assuming the covariance matrix is identity times sigma**2)
+    (assuming the covariance matrix is identity times sigma**2).
+
+    Make sure that obs and mean have the right dimensions such that obs - mean
+    is broadcasted correctly.
 
     Args:
-        obs: the observations, [P x N] where P is the number of samples and N the number of dimensions
-        mean: the mean [P x N], where each row is the mean of the corresponding sample
+        obs: the observations, [..., D] where D is the number of dimensions
+        mean: the means [..., D]
         sigma (float): the standard deviation
     
     Returns:
@@ -485,12 +488,10 @@ def multivariate_log_likelihood(obs, mean, sigma):
     if mean.ndim == 1:
         mean = mean.reshape(1, -1)
 
-    # assert obs.shape == mean.shape
+    D = obs.shape[-1]
 
-    k = obs.shape[1]
-
-    sq_dist = np.sum((obs - mean) ** 2, axis=1)
-    return -np.log(2 * np.pi * sigma**2) * k / 2 - sq_dist / (2 * sigma**2)
+    sq_dist = np.sum((obs - mean) ** 2, axis=-1)
+    return -np.log(2 * np.pi * sigma**2) * D / 2 - sq_dist / (2 * sigma**2)
 
 
 def compute_emission_logp(s_t,
