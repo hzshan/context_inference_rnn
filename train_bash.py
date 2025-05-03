@@ -114,7 +114,7 @@ def leakyrnn_config():
     config = dict(seed=0, dim_hid=256, dim_s=5, dim_y=3,
                  alpha=0.1, nonlin='tanh', sig_r=0.05, w_fix=0.2, n_skip=0,
                  optim='AdamWithProj', reset_optim=False, lr=0.01, weight_decay=1e-5,
-                 use_proj=False, use_ewc=False, ewc_lambda=0, batch_size_vl=256,
+                 use_proj=False, use_ewc=False, ewc_lambda=0,
                  batch_size=256, num_iter=1000, n_trials_ts=200, n_trials_vl=200,
                  sig_s=0.01, p_stay=0.9, min_Te=5, nx=8, d_stim=2*np.pi/8,
                  epoch_type=1, fixation_type=2, info_type='c', min_Te_R=None, p_stay_R=None,
@@ -134,12 +134,11 @@ def leakyrnn_config():
         # 'use_proj': [True],
         ######################
         'use_ewc': [True],
-        'ewc_lambda': [5e4],
-        'batch_size_vl': [1],
+        'ewc_lambda': [5e4, 1e5],
         ######################
         # 'ckpt_step': [1],
         # 'num_iter': [30],
-        'seed': [0],   #, 1, 2, 3, 4
+        'seed': [0, 1, 2],   #, 1, 2, 3, 4
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -148,7 +147,7 @@ def leakyrnn_config():
         config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
         save_name = 'leakyrnn_v1'
         save_name += '_proj' if config['use_proj'] else ''
-        save_name += '_ewc{}bz{}'.format(config['ewc_lambda'], config['batch_size_vl']) if config['use_ewc'] else ''
+        save_name += ('_ewc' + str(int(config['ewc_lambda']))) if config['use_ewc'] else ''
         save_name += ('_a' + str(config['alpha'])) if config['alpha'] != 0.1 else ''
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 256 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
@@ -173,7 +172,7 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = cxtrnn_config()
+    configs, save_names = leakyrnn_config()
     for config, save_name in zip(configs, save_names):
         # if os.path.isfile(f'./saved_models/{save_name}/model.pth'):
         #     config['retrain'] = False

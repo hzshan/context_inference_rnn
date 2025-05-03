@@ -712,7 +712,7 @@ def compute_fisher_info(model, vl_data_loader, loss_kwargs):
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                              alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0,
                              optim='AdamWithProj', reset_optim=True, lr=0.01, weight_decay=0,
-                             use_proj=False, use_ewc=False, ewc_lambda=0, batch_size_vl=256,
+                             use_proj=False, use_ewc=False, ewc_lambda=0,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                              epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
@@ -805,7 +805,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
         ################################################
         if use_ewc:
             vl_dataset = TaskDataset(n_trials=n_trials_vl, task=task, **data_kwargs)
-            vl_data_loader = DataLoader(dataset=vl_dataset, batch_size=batch_size_vl, collate_fn=collate_fn)
+            vl_data_loader = DataLoader(dataset=vl_dataset, batch_size=1, collate_fn=collate_fn)
             fisher_new = compute_fisher_info(model, vl_data_loader, loss_kwargs)
             params_new = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
             for n in fisher_new:
