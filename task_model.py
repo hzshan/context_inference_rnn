@@ -515,22 +515,21 @@ def get_stats_for_single_trial(
 
     prior_cx /= prior_cx.sum()
 
-    x_set = np.arange(nx)
     nT = len(obs)
-    log_likes = np.zeros((nx, nz, nT))
+    log_likes = None
 
-    for ix, _ in enumerate(x_set):
-        for iz in range(nz):
-            if show_y:
-                log_likes[ix, iz, :] = \
-                    multivariate_log_likelihood(
-                        obs=obs, mean=W[ix, iz][None, :],
-                        sigma=sigma)
-            else:
-                log_likes[ix, iz, :] = \
-                    multivariate_log_likelihood(
-                        obs=obs, mean=W[ix, iz][None, :obs.shape[1]],
-                        sigma=sigma)
+
+    if show_y:
+        log_likes = multivariate_log_likelihood(
+                    obs=obs[None, None, :, :], mean=W[:, :, None, :],
+                    sigma=sigma)
+    
+    else:
+        log_likes = multivariate_log_likelihood(
+                    obs=obs[None, None, :, :], mean=W[:, :, None, :obs.shape[1]],
+                    sigma=sigma)
+    
+    assert log_likes.shape == (nx, nz, nT)
 
     gamma, xi, p_cx, LL = forward_backward(
         p0_z, M, log_likes, prior_cx=prior_cx, forward_only=forward_only)
