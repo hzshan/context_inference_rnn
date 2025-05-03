@@ -630,18 +630,20 @@ def generate_trials(task_list: list,
         full_x_list += list(x_each_task)
 
     trials = []
+    epoch_boundaries = []  # useful for plotting
     
     for itrial in range(n_trials):
         c = task_ids[itrial]
         x = full_x_list[itrial]
-        sy, _ = compose_trial(
+        sy, boundaries = compose_trial(
             task_dict[task_list[c]],
             {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te, d_stim=d_stim)
         trials.append((c, x, sy))
+        epoch_boundaries.append(boundaries)
 
     trials = np.array(trials)
 
-    return trials, epoch_list
+    return trials, epoch_list, epoch_boundaries
 
 
 def get_ground_truth(task_list, epoch_list, p_stay, nx, d_stim=None, eps=1e-10):
