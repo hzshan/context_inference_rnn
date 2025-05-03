@@ -46,13 +46,17 @@ def cxtrnn_config():
     config_ranges = {
         #################
         'gating_type': [3],
-        'nonlin': ['tanh', 'relu'],
+        'nonlin': ['relu'], #'tanh',
         ######################
         'task_list': [
-            ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
+            ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
+            ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
+            ['PRO_R', 'ANTI_R', 'PRO_D', 'ANTI_D'],
+            ['PRO_R', 'PRO_D', 'ANTI_R', 'ANTI_D'],
+            # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
         # 'mixed_train': [True],
         ##########################
@@ -60,8 +64,8 @@ def cxtrnn_config():
         # 'ckpt_step': [1],
         # 'num_iter': [30],
         ###########################
-        'use_task_model': [True],
-        'task_model_ntrials': [512],
+        # 'use_task_model': [True],
+        # 'task_model_ntrials': [512],
         ############################
         'seed': [0],
     }
@@ -109,7 +113,8 @@ def cxtrnn_config():
 def leakyrnn_config():
     config = dict(seed=0, dim_hid=256, dim_s=5, dim_y=3,
                  alpha=0.1, nonlin='tanh', sig_r=0.05, w_fix=0.2, n_skip=0,
-                 optim='AdamWithProj', reset_optim=False, use_proj=False, lr=0.01, weight_decay=1e-5,
+                 optim='AdamWithProj', reset_optim=False, lr=0.01, weight_decay=1e-5,
+                 use_proj=False, use_ewc=False, ewc_lambda=0, batch_size_vl=256,
                  batch_size=256, num_iter=1000, n_trials_ts=200, n_trials_vl=200,
                  sig_s=0.01, p_stay=0.9, min_Te=5, nx=8, d_stim=2*np.pi/8,
                  epoch_type=1, fixation_type=2, info_type='c', min_Te_R=None, p_stay_R=None,
@@ -118,18 +123,23 @@ def leakyrnn_config():
                  save_dir=None, retrain=True, save_ckpt=False,
                  train_fn='train_leakyrnn_sequential')
     config_ranges = {
-        'nonlin': ['tanh', 'relu'],
+        'nonlin': ['tanh', 'relu'], #'tanh', 'relu'
         'task_list': [
-            ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
         # 'mixed_train': [True],
-        'use_proj': [True],
+        # 'use_proj': [True],
+        ######################
+        'use_ewc': [True],
+        'ewc_lambda': [5e4],
+        'batch_size_vl': [1],
+        ######################
         # 'ckpt_step': [1],
         # 'num_iter': [30],
-        'seed': [0],
+        'seed': [0],   #, 1, 2, 3, 4
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -138,6 +148,7 @@ def leakyrnn_config():
         config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
         save_name = 'leakyrnn_v1'
         save_name += '_proj' if config['use_proj'] else ''
+        save_name += '_ewc{}bz{}'.format(config['ewc_lambda'], config['batch_size_vl']) if config['use_ewc'] else ''
         save_name += ('_a' + str(config['alpha'])) if config['alpha'] != 0.1 else ''
         save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 256 else ''
         save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
@@ -164,7 +175,7 @@ def leakyrnn_config():
 if __name__ == '__main__':
     configs, save_names = cxtrnn_config()
     for config, save_name in zip(configs, save_names):
-        if os.path.isfile(f'./saved_models/{save_name}/model.pth'):
-            config['retrain'] = False
+        # if os.path.isfile(f'./saved_models/{save_name}/model.pth'):
+        #     config['retrain'] = False
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)

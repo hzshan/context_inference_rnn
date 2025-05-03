@@ -397,11 +397,11 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
             task = 'all'
         if reset_optim:
             optimizer = get_optimizer(model, optim, **optim_kwargs)
-        for iter in range(num_iter):
+        for i_iter in range(num_iter):
             tr_dataset = TaskDataset(n_trials=batch_size, task=task, **data_kwargs)
             #################################################
             if use_task_model:
-                if batch_size * (iter + 1) <= task_model_ntrials:
+                if batch_size * (i_iter + 1) <= task_model_ntrials:
                     for itrial in range(len(tr_dataset)):
                         trial = tr_dataset.trials[itrial]
                         s_ = deepcopy(trial[:, :dim_s].numpy())
@@ -413,8 +413,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                         task_model.dynamic_initialize_W(trial_)
                         task_model.learn_single_trial(trial_)
                 max_error = update_inferred_z(tr_dataset, task_model, use_y=True, fixation_type=fixation_type)
-                if verbose and (iter in [0, 1, num_iter - 1]):
-                    print(f'task {task}, iter {iter + 1}, max inference error: {max_error:.4f}', flush=True)
+                if verbose and (i_iter in [0, 1, num_iter - 1]):
+                    print(f'task {task}, iter {i_iter + 1}, max inference error: {max_error:.4f}', flush=True)
             #################################################
             tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
             model.train()
@@ -437,15 +437,15 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                     optimizer.step(wd_occurred_z=occurred_z, gating_type=gating_type, lr_z=lr_z)
                 else:
                     optimizer.step()
-            if iter == num_iter - 1:
+            if i_iter == num_iter - 1:
                 occurred_z = np.concatenate([trial[:, (dim_s + dim_y):] for trial in tr_dataset.trials], axis=0).mean(0)
                 occurred_z = torch.tensor(occurred_z >= lr_z_eps).float().to(device)
                 check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device)
                 lr_z = lr_z * gamma ** occurred_z
-            if (iter + 1) % ckpt_step == 0:
+            if (i_iter + 1) % ckpt_step == 0:
                 tr_loss_arr.append(loss.item())
                 if verbose:
-                    print(f'task {task}, iter {iter + 1}, train loss: {loss.item():.4f}', flush=True)
+                    print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
                 # evaluate model on all tasks
                 ####################################################
                 if use_task_model:
@@ -686,9 +686,33 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
     return proj_mtrx_dict
 
 
+def compute_fisher_info(model, vl_data_loader, loss_kwargs):
+    device = next(model.parameters()).device
+    dim_s, dim_y = vl_data_loader.dataset.dim_s, vl_data_loader.dataset.dim_y
+    fisher_info = {n: torch.zeros_like(p) for n, p in model.named_parameters() if p.requires_grad}
+    model.eval()
+    count = 0
+    for ib, cur_batch in enumerate(vl_data_loader):
+        syz, lengths = cur_batch
+        syz = syz.to(device)
+        s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+        out, states = model(s, z)
+        loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
+        model.zero_grad()
+        loss.backward()
+        for n, p in model.named_parameters():
+            if p.grad is not None:
+                fisher_info[n] += p.grad.detach() ** 2
+        count += 1
+    for n in fisher_info:
+        fisher_info[n] /= count
+    return fisher_info
+
+
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                              alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0,
-                             optim='AdamWithProj', reset_optim=True, use_proj=False, lr=0.01, weight_decay=0,
+                             optim='AdamWithProj', reset_optim=True, lr=0.01, weight_decay=0,
+                             use_proj=False, use_ewc=False, ewc_lambda=0, batch_size_vl=256,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
                              epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
@@ -728,6 +752,8 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
     ###########################################
     proj_mtrx_dict = dict(cov_1=0, cov_2=0, cov_3=0, cov_4=0, proj_1=None, proj_2=None, proj_3=None, proj_4=None)
     ###########################################
+    fisher_total, theta_merged = {}, {}
+    ###########################################
     optimizer = eval(optim)(model.named_parameters(), lr=lr, weight_decay=weight_decay)
     for itask, task in enumerate(task_list):
         if mixed_train:
@@ -744,6 +770,14 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                 s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
                 out, states = model(s, z)
                 loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
+                #####################
+                if use_ewc and fisher_total:
+                    ewc_loss = 0.0
+                    for n, p in model.named_parameters():
+                        if n in fisher_total:
+                            ewc_loss = ewc_loss + (fisher_total[n] * (p - theta_merged[n]).pow(2)).sum()
+                    loss = loss + ewc_lambda * ewc_loss
+                #####################
                 optimizer.zero_grad()
                 loss.backward()
                 #####################
@@ -768,7 +802,24 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
             vl_dataset = TaskDataset(n_trials=n_trials_vl, task=task, **data_kwargs)
             vl_data_loader = DataLoader(dataset=vl_dataset, batch_size=n_trials_vl, collate_fn=collate_fn)
             proj_mtrx_dict = compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_cov)
-        ################################################################
+        ################################################
+        if use_ewc:
+            vl_dataset = TaskDataset(n_trials=n_trials_vl, task=task, **data_kwargs)
+            vl_data_loader = DataLoader(dataset=vl_dataset, batch_size=batch_size_vl, collate_fn=collate_fn)
+            fisher_new = compute_fisher_info(model, vl_data_loader, loss_kwargs)
+            params_new = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
+            for n in fisher_new:
+                if n in fisher_total:
+                    f_old = fisher_total[n]
+                    theta_old = theta_merged[n]
+                    f_new = fisher_new[n]
+                    theta_new = params_new[n]
+                    fisher_total[n] = f_old + f_new
+                    theta_merged[n] = (f_old * theta_old + f_new * theta_new) / (f_old + f_new + 1e-10)
+                else:
+                    fisher_total[n] = fisher_new[n]
+                    theta_merged[n] = params_new[n]
+        ################################################
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
     ts_perf_arr = np.array(ts_perf_arr)
@@ -787,7 +838,7 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_v2_gating3_ioZ_relu_PmPdAmAdPdmAdm_tskm512_sd0'
+        save_name = 'cxtrnn_seq_v1_gating3_ioZ_a0pt1_nh256_wfix0pt2_PdPmAdAmPdmAdm_fix2_nitr30_AdamGated_wdEps0pt001_lrEps0pt001_gamma0pt5_wd1e-05_sd0'
         config = load_config(save_name)
         config['retrain'] = False
     else:
@@ -809,12 +860,19 @@ if __name__ == '__main__':
             axes[iax].plot(ts_arr[itask], color=f'C{itask}', label=config['task_list'][itask])
         axes[iax].legend(loc='center left', bbox_to_anchor=(1, 0.5))
         axes[iax].set_ylabel(ylabel)
-    # axes[1].set_ylim([-0.05, 0.5])
+        ymin, ymax = axes[iax].get_ylim()
+        dn_ckpt = config['num_iter'] / config['ckpt_step']
+        for itask in range(len(config['task_list']) + 1):
+            axes[iax].plot([itask * dn_ckpt + 1] * 2, [ymin, ymax], alpha=0.2, color='gray')
+        for itask in range(len(config['task_list'])):
+            axes[iax].fill_between([itask * dn_ckpt + 1, (itask + 1) * dn_ckpt + 1], ymin, ymax, color=f'C{itask}', alpha=0.1)
     if config['save_dir'] is not None:
         fig.savefig(config['save_dir'] + '/loss.png', bbox_inches='tight')
     ####################################################
     dim_s = config.get('dim_s', 3)
     dim_y = config.get('dim_y', 3)
+    if config['z_list'] is None:
+        config['z_list'] = get_z_list(config['task_list'], config['epoch_type'])
     fig, axes = plt.subplots(dim_s + dim_y, len(config['task_list']),
                              figsize=(2 * len(config['task_list']), dim_s + dim_y),
                              sharey=True, sharex='col')
