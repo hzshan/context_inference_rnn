@@ -317,7 +317,7 @@ def update_inferred_z(itask, s, y, z, lengths, task_model, use_y=True, fixation_
     obs = torch.cat((s, y), dim=-1) if use_y else s
     inferred_z = task_model_inference(task_model, itask, obs)
     seq_len, batch_size, _ = s.shape
-    mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # (seq_len, batch)
+    mask = (torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)).to(s.device)  # (seq_len, batch)
     inferred_z = inferred_z * mask[..., None]
     max_error = torch.max(torch.abs(inferred_z - z) * mask[..., None]).item()
     return inferred_z, max_error
@@ -392,7 +392,6 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
     model = CXTRNN(dim_s=dim_s, dim_y=dim_y, dim_z=len(z_list), rank=rank,
                    dim_hid=dim_hid, alpha=alpha, init_scale=init_scale,
                    gating_type=gating_type, share_io=share_io, nonlin=nonlin, sig_r=sig_r).to(device)
-    print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
         save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
@@ -402,6 +401,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
         ts_perf_arr = np.load(save_dir + '/ts_perf.npy')
         return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
     data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=z_list, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
                        epoch_type=epoch_type, fixation_type=fixation_type,
@@ -413,7 +413,6 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
         ts_data_loaders.append(ts_data_loader)
     ###########################################
     task_model = None
-    task_model_ckpt_list = []
     if use_task_model:
         n_epochs_each_task = [len(set(task_epoch(task, epoch_type=epoch_type).split('->'))) for task in task_list]
         w_fixate = make_delay_or_fixation_epoch({}, 1, 0, 0, d_stim=d_stim)
@@ -428,6 +427,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
     ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
     ts_err_arr = [[ts_err[itask]] for itask in range(len(task_list))]
     ckpt_list = [deepcopy(model.state_dict())]
+    task_model_ckpt_list = [deepcopy(task_model)]
     ############################################
     optim_kwargs = dict(lr=lr, weight_decay=weight_decay)
     optimizer = get_optimizer(model, optim, **optim_kwargs)
@@ -757,7 +757,6 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = LeakyRNN(dim_i=(dim_s + len(task_list)), dim_y=dim_y, dim_hid=dim_hid,
                      alpha=alpha, nonlin=nonlin, sig_r=sig_r).to(device)
-    print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
 
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
         save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
@@ -767,6 +766,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
         ts_perf_arr = np.load(save_dir + '/ts_perf.npy')
         return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
     data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=None, task_list=task_list,
                        sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
                        epoch_type=epoch_type, fixation_type=fixation_type,
