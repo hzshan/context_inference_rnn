@@ -30,7 +30,7 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
 
 task_list = ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM']
 task_pairs = []
-for task1 in task_list: #['PRO_D', 'PRO_M', 'PRO_DM']: #
+for task1 in task_list:
     for task2 in task_list:
         cur_task_list = [task1] if task1 == task2 else [task1, task2]
         task_pairs.append(cur_task_list)
@@ -57,26 +57,26 @@ def cxtrnn_config():
         'gating_type': [3],
         'nonlin': ['relu'],  # 'tanh',
         ######################
-        # 'task_list': task_pairs,
+        'task_list': task_pairs,
         # 'task_list': [['ANTI_M'], ['PRO_M', 'ANTI_M']],
-        'task_list': [
-            ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
-            ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
+        # 'task_list': [
+        #     ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
+        #     ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
             # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
-                    ],
+            #         ],
         # 'mixed_train': [True],
         ##########################
-        'save_ckpt': [True],
-        # 'ckpt_step': [1],
-        # 'num_iter': [20],
+        'save_ckpt': [False],
+        'ckpt_step': [1],
+        'num_iter': [10],
         ###########################
         'use_task_model': [True],
         'task_model_ntrials': [512],
         ############################
-        'seed': [0],
+        'seed': [0, 1, 2],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -183,7 +183,7 @@ def leakyrnn_config():
 if __name__ == '__main__':
     configs, save_names = cxtrnn_config()
     for config, save_name in zip(configs, save_names):
-        # if os.path.isfile(f'./saved_models/{save_name}/model.pth'):
-        #     continue
+        if os.path.isfile(f'./saved_models/{save_name}/model.pth'):
+            continue
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)

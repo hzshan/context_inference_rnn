@@ -335,6 +335,7 @@ def check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device):
 
 @torch.no_grad()
 def evaluate(model, ts_data_loaders, loss_kwargs, task_model=None):
+    model.eval()
     device = next(model.parameters()).device
     ts_loss, ts_perf, ts_err = [], [], []
     for itask_ts, ts_data_loader in enumerate(ts_data_loaders):
@@ -489,7 +490,6 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                 tr_loss_arr.append(loss.item())
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
-                model.eval()
                 ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
@@ -821,7 +821,6 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                 tr_loss_arr.append(loss.item())
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
-                model.eval()
                 ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
