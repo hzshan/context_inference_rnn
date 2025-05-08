@@ -24,7 +24,7 @@ class TaskModel:
         # initialize parameters
         self.M = np.ones((nc, nz, nz))
         self.M /= self.M.sum(axis=-1, keepdims=True)
-        self.W = np.zeros((nx, nz, d))
+        self.W = np.ones((nx, nz, d)) * -10
         self.p0_z = np.ones(nz)
         self.p0_z /= self.p0_z.sum()
 
@@ -379,8 +379,10 @@ def dynamic_initialize_W(trial,
             # mark this (c, x) pair as familiar
             familiar_cx[c, putative_x] = 1
 
-        
-    curr_W *= familiar_xz[:, :, None]
+    # the uninitialized weights are set to a large negative number
+    mask = np.repeat(familiar_xz[:, :, None] == 0, 
+                     S_Y_COMBINED_DIM, axis=-1)
+    curr_W[mask] = -10
     return curr_W, familiar_cx, familiar_xz
 
 
