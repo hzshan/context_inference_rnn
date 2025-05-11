@@ -189,15 +189,29 @@ def masked_mse_loss(predictions, states, targets, lengths, w_fix=1, n_skip=0, re
 
 
 @torch.no_grad()
-def batch_performance(out, y, lengths):
+def batch_performance(out, y, lengths, strict=False):
     seq_len, batch_size, dim_y = out.shape
-    out_end = out[lengths - 1, torch.arange(batch_size)]
-    out_theta = torch.arctan2(out_end[:, 1], out_end[:, 0])
-    y_end = y[lengths - 1, torch.arange(batch_size)]
-    y_theta = torch.arctan2(y_end[:, 1], y_end[:, 0])
-    d_theta = torch.remainder(out_theta - y_theta + math.pi, 2 * math.pi) - math.pi
-    response_correct = d_theta.abs() < math.pi / 10
-    return response_correct
+    if strict:
+        out_theta = torch.arctan2(out[:, :, 1], out[:, :, 0])
+        y_theta = torch.arctan2(y[:, :, 1], y[:, :, 0])
+        d_theta = torch.remainder(out_theta - y_theta + math.pi, 2 * math.pi) - math.pi
+        response_correct = d_theta.abs() < math.pi / 10
+        mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)  # seq_len, batch_sze
+        mask = mask.to(y.device) & (y[:, :, -1] == y[lengths[0] - 1, 0, -1])
+        response_correct = torch.all(response_correct | ~mask, dim=0)
+        fixation_correct = (out[..., -1] > 0.5) == (y[..., -1] > 0.5)
+        mask = torch.arange(seq_len).unsqueeze(1) < lengths.unsqueeze(0)
+        fixation_correct = torch.all(fixation_correct | ~mask.to(y.device), dim=0)
+        correct = response_correct & fixation_correct
+    else:
+        out_end = out[lengths - 1, torch.arange(batch_size)]
+        out_theta = torch.arctan2(out_end[:, 1], out_end[:, 0])
+        y_end = y[lengths - 1, torch.arange(batch_size)]
+        y_theta = torch.arctan2(y_end[:, 1], y_end[:, 0])
+        d_theta = torch.remainder(out_theta - y_theta + math.pi, 2 * math.pi) - math.pi
+        response_correct = d_theta.abs() < math.pi / 10
+        correct = response_correct
+    return correct
 
 
 def generate_trial(task, x, z_list, task_list, sig_s, sig_y, p_stay, min_Te, d_stim,
@@ -334,7 +348,7 @@ def check_epoch_occurrence(task, epoch_type, z_list, occurred_z, device):
 
 
 @torch.no_grad()
-def evaluate(model, ts_data_loaders, loss_kwargs, task_model=None):
+def evaluate(model, ts_data_loaders, loss_kwargs, task_model=None, strict=False):
     model.eval()
     device = next(model.parameters()).device
     ts_loss, ts_perf, ts_err = [], [], []
@@ -358,7 +372,7 @@ def evaluate(model, ts_data_loaders, loss_kwargs, task_model=None):
             out, states = model(s, z)
             loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
             cur_ts_loss.append(loss.item())
-            perf = batch_performance(out, y, lengths)
+            perf = batch_performance(out, y, lengths, strict=strict)
             cur_ts_perf.append(perf.float().mean().item())
         ts_loss.append(np.mean(cur_ts_loss))
         ts_perf.append(np.mean(cur_ts_perf))
@@ -376,7 +390,7 @@ def get_optimizer(model, optim, lr=0.01, weight_decay=0):
 
 def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, init_scale=None,
                          gating_type=3, rank=None, share_io=True, nonlin='tanh',
-                         sig_r=0, w_fix=1, n_skip=0, reg_act=0,
+                         sig_r=0, w_fix=1, n_skip=0, reg_act=0, strict=False,
                          optim='Adam', reset_optim=True, lr=0.01, weight_decay=0,
                          wd_z_eps=0, lr_z_eps=0, gamma=1,
                          batch_size=256, num_iter=500, n_trials_ts=200,
@@ -399,7 +413,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
-        ts_perf_arr = np.load(save_dir + '/ts_perf.npy')
+        perf_sfx = '_strict' if strict else ''
+        ts_perf_arr = np.load(save_dir + f'/ts_perf{perf_sfx}.npy')
         return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
@@ -422,7 +437,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                                n_epochs_each_task=n_epochs_each_task, w_fixate=w_fixate)
     ###########################################
     loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
-    ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model)
+    ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model, strict=strict)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
@@ -490,7 +505,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                 tr_loss_arr.append(loss.item())
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
-                ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model)
+                ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs,
+                                                    task_model=task_model, strict=strict)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
@@ -511,7 +527,8 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
         torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
         np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
-        np.save(save_dir + '/ts_perf.npy', ts_perf_arr)
+        perf_sfx = '_strict' if strict else ''
+        np.save(save_dir + f'/ts_perf{perf_sfx}.npy', ts_perf_arr)
         if use_task_model:
             np.save(save_dir + '/ts_err.npy', np.array(ts_err_arr))
             with open(save_dir + '/task_model.pkl', 'wb') as f:
@@ -744,7 +761,7 @@ def compute_fisher_info(model, vl_data_loader, loss_kwargs):
 
 
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
-                             alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0,
+                             alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0, strict=False,
                              optim='AdamWithProj', reset_optim=True, lr=0.01, weight_decay=0,
                              use_proj=False, use_ewc=False, ewc_lambda=0,
                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
@@ -763,7 +780,8 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
-        ts_perf_arr = np.load(save_dir + '/ts_perf.npy')
+        perf_sfx = '_strict' if strict else ''
+        ts_perf_arr = np.load(save_dir + f'/ts_perf{perf_sfx}.npy')
         return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
     print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
@@ -778,7 +796,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
         ts_data_loaders.append(ts_data_loader)
 
     loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
-    ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs)
+    ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
     tr_loss_arr = [ts_loss[0]]
     ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
     ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
@@ -821,7 +839,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                 tr_loss_arr.append(loss.item())
                 if verbose:
                     print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
-                ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs)
+                ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
                 for itask_ts, task_ts in enumerate(task_list):
                     ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
                     ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
@@ -861,7 +879,8 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
         torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
         np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
         np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
-        np.save(save_dir + '/ts_perf.npy', ts_perf_arr)
+        perf_sfx = '_strict' if strict else ''
+        np.save(save_dir + f'/ts_perf{perf_sfx}.npy', ts_perf_arr)
     return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
 

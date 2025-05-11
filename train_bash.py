@@ -4,7 +4,8 @@ import numpy as np
 from train_config import save_config, vary_config
 
 
-def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
+def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=False):
+    main_file = 'train_few_shot.py' if train_few_shot else 'train.py'
     if cluster:
         with open(save_name + '.sh', 'w') as f:
             f.write('#!/bin/bash\n'
@@ -12,18 +13,18 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True):
                     + '#SBATCH --nodes=1\n'
                     + f'#SBATCH --cpus-per-task={num_cpu}\n'
                     + f'#SBATCH --gres=gpu:{num_gpu}\n'
-                    # + '#SBATCH --account=abbott\n'
-                    + '#SBATCH --nodelist=ax20\n'
+                    + '#SBATCH --account=abbott\n'
+                    # + '#SBATCH --nodelist=ax20\n'
                     + f'#SBATCH --output={save_name}.out\n'
                     + '\n'
                     + '\n'
-                    + f'python3 train.py --save_name={save_name} '
+                    + f'python3 {main_file} --save_name={save_name} '
                     + '\n'
                     + 'exit 0;\n')
         test_cmd = f'sbatch --qos=high-priority {save_name}.sh'
         os.system(test_cmd)
     else:
-        test_cmd = f'python3 train.py --save_name={save_name}'
+        test_cmd = f'python3 {main_file} --save_name={save_name}'
         os.system(test_cmd)
     return
 
@@ -40,7 +41,7 @@ def cxtrnn_config():
     config = dict(seed=0, dim_hid=256, alpha=0.1, dim_s=5, dim_y=3,
                   gating_type=3, rank=None, share_io=False, frz_io_layer=False,
                   nonlin='tanh', init_scale=None,
-                  sig_r=0.05, w_fix=0.2, n_skip=0, reg_act=0,
+                  sig_r=0.05, w_fix=0.2, n_skip=0, reg_act=0, strict=False,
                   optim='AdamGated', reset_optim=False, lr=1e-3, weight_decay=1e-5,
                   wd_z_eps=1e-3, lr_z_eps=1e-3, gamma=0.5,
                   batch_size=256, num_iter=1000, n_trials_ts=200,
@@ -57,26 +58,28 @@ def cxtrnn_config():
         'gating_type': [3],
         'nonlin': ['relu'],  # 'tanh',
         ######################
-        'task_list': task_pairs,
-        # 'task_list': [['ANTI_M'], ['PRO_M', 'ANTI_M']],
-        # 'task_list': [
-        #     ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
-        #     ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
-            # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+        # 'task_list': task_pairs,
+        # 'task_list': [['ANTI_M'], ['PRO_M', 'ANTI_M'], ['ANTI_D', 'ANTI_M'], ['ANTI_DM', 'ANTI_M']],
+        'task_list': [
+            # ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
+            # ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
+            ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
-            # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
-            #         ],
+            ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+            ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
+                    ],
         # 'mixed_train': [True],
+        # 'epoch_type': [2],
         ##########################
+        'strict': [True],
         'save_ckpt': [False],
-        'ckpt_step': [1],
-        'num_iter': [10],
+        # 'ckpt_step': [1],
+        # 'num_iter': [10],
         ###########################
         'use_task_model': [True],
         'task_model_ntrials': [512],
         ############################
-        'seed': [0, 1, 2],
+        'seed': [0, 1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -121,7 +124,7 @@ def cxtrnn_config():
 
 def leakyrnn_config():
     config = dict(seed=0, dim_hid=256, dim_s=5, dim_y=3,
-                 alpha=0.1, nonlin='tanh', sig_r=0.05, w_fix=0.2, n_skip=0,
+                 alpha=0.1, nonlin='tanh', sig_r=0.05, w_fix=0.2, n_skip=0, strict=False,
                  optim='AdamWithProj', reset_optim=False, lr=0.01, weight_decay=1e-5,
                  use_proj=False, use_ewc=False, ewc_lambda=0,
                  batch_size=256, num_iter=1000, n_trials_ts=200, n_trials_vl=200,
@@ -132,7 +135,7 @@ def leakyrnn_config():
                  save_dir=None, retrain=True, save_ckpt=False,
                  train_fn='train_leakyrnn_sequential')
     config_ranges = {
-        'nonlin': ['relu', 'tanh'], #'tanh', 'relu'
+        'nonlin': ['relu'], #'tanh', 'relu'
         'task_list': [
             # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
@@ -143,11 +146,12 @@ def leakyrnn_config():
         # 'use_proj': [True],
         ######################
         'use_ewc': [True],
-        'ewc_lambda': [5e4, 1e5],
+        'ewc_lambda': [5e4],
         ######################
         # 'ckpt_step': [1],
         # 'num_iter': [30],
-        'seed': [3, 4],   #, 1, 2, 3, 4
+        'strict': [True],
+        'seed': [0, 1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -183,7 +187,12 @@ def leakyrnn_config():
 if __name__ == '__main__':
     configs, save_names = cxtrnn_config()
     for config, save_name in zip(configs, save_names):
-        if os.path.isfile(f'./saved_models/{save_name}/model.pth'):
+        if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
             continue
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)
+
+    # for task_order in ['PsPmAs', 'PsAsPm']:
+    #     for seed in range(3):
+    #         save_name = f'cxtrnn_seq_v2_gating3_ioZ_relu_{task_order}_tskm512_sd{seed}'
+    #         run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)
