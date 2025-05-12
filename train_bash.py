@@ -61,15 +61,19 @@ def cxtrnn_config():
         # 'task_list': task_pairs,
         # 'task_list': [['ANTI_M'], ['PRO_M', 'ANTI_M'], ['ANTI_D', 'ANTI_M'], ['ANTI_DM', 'ANTI_M']],
         'task_list': [
-            # ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
-            # ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
-            ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_M', 'ANTI_S', 'ANTI_M'],
+            # ['PRO_M', 'PRO_S', 'ANTI_S', 'ANTI_M'],
+            # ['PRO_M', 'ANTI_S', 'PRO_S', 'ANTI_M'],
+            ['PRO_S', 'ANTI_S', 'PRO_M'],  # 'ANTI_M'
+            ['PRO_S', 'PRO_M', 'ANTI_S'],  # 'ANTI_M'
+            # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
+            # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
         # 'mixed_train': [True],
         # 'epoch_type': [2],
+        # 'gamma': [0.01],
         ##########################
         'strict': [True],
         'save_ckpt': [False],
@@ -137,16 +141,21 @@ def leakyrnn_config():
     config_ranges = {
         'nonlin': ['relu'], #'tanh', 'relu'
         'task_list': [
+            ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
+            ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
+            # ['PRO_S', 'ANTI_S', 'PRO_M'],
+            # ['PRO_S', 'PRO_M', 'ANTI_S'],
             # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
         # 'mixed_train': [True],
-        # 'use_proj': [True],
+        'use_proj': [True],
+        'save_after_itask': [2],
         ######################
-        'use_ewc': [True],
-        'ewc_lambda': [5e4],
+        # 'use_ewc': [True],
+        # 'ewc_lambda': [5e4],
         ######################
         # 'ckpt_step': [1],
         # 'num_iter': [30],
@@ -185,14 +194,14 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = cxtrnn_config()
+    configs, save_names = leakyrnn_config()
     for config, save_name in zip(configs, save_names):
         if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
             continue
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)
 
-    # for task_order in ['PsPmAs', 'PsAsPm']:
-    #     for seed in range(3):
-    #         save_name = f'cxtrnn_seq_v2_gating3_ioZ_relu_{task_order}_tskm512_sd{seed}'
+    # for task_order in ['PsPmAsAm', 'PsAsPmAm']:
+    #     for seed in range(1):
+    #         save_name = f'leakyrnn_v1_proj_relu_{task_order}_AdamWithProj_sd{seed}'
     #         run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)

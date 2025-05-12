@@ -761,15 +761,15 @@ def compute_fisher_info(model, vl_data_loader, loss_kwargs):
 
 
 def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
-                             alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0, strict=False,
-                             optim='AdamWithProj', reset_optim=True, lr=0.01, weight_decay=0,
-                             use_proj=False, use_ewc=False, ewc_lambda=0,
-                             batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
-                             sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
-                             epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
-                             task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], mixed_train=False,
-                             verbose=True, ckpt_step=10, alpha_cov=0.001,
-                             save_dir=None, retrain=True, save_ckpt=False, **kwargs):
+                              alpha=0.5, nonlin='tanh', sig_r=0, w_fix=1, n_skip=0, reg_act=0, strict=False,
+                              optim='AdamWithProj', reset_optim=True, lr=0.01, weight_decay=0,
+                              use_proj=False, use_ewc=False, ewc_lambda=0,
+                              batch_size=256, num_iter=500, n_trials_ts=200, n_trials_vl=200,
+                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
+                              epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
+                              task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], mixed_train=False,
+                              verbose=True, ckpt_step=10, alpha_cov=0.001,
+                              save_dir=None, retrain=True, save_ckpt=False, save_after_itask=-1, **kwargs):
     set_deterministic(seed)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = LeakyRNN(dim_i=(dim_s + len(task_list)), dim_y=dim_y, dim_hid=dim_hid,
@@ -870,6 +870,15 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                 else:
                     fisher_total[n] = fisher_new[n]
                     theta_merged[n] = params_new[n]
+        ################################################
+        if itask == save_after_itask and save_dir is not None:
+            save_sfx = f'after_itask{itask}'
+            torch.save(model.state_dict(), save_dir + f'/model_{save_sfx}.pth')
+            if use_proj:
+                torch.save(proj_mtrx_dict, save_dir + f'/proj_mtrx_dict_{save_sfx}.pt')
+            if use_ewc:
+                torch.save(fisher_total, save_dir + f'/fisher_total_{save_sfx}.pt')
+                torch.save(theta_merged, save_dir + f'/theta_merged_{save_sfx}.pt')
         ################################################
     tr_loss_arr = np.array(tr_loss_arr)
     ts_loss_arr = np.array(ts_loss_arr)
