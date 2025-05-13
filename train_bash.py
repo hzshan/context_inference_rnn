@@ -6,8 +6,9 @@ from train_config import save_config, vary_config
 
 def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=False):
     main_file = 'train_few_shot.py' if train_few_shot else 'train.py'
+    save_file = save_name + ('_few_shot' if train_few_shot else '')
     if cluster:
-        with open(save_name + '.sh', 'w') as f:
+        with open(save_file + '.sh', 'w') as f:
             f.write('#!/bin/bash\n'
                     + '\n'
                     + '#SBATCH --nodes=1\n'
@@ -15,13 +16,13 @@ def run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=False
                     + f'#SBATCH --gres=gpu:{num_gpu}\n'
                     + '#SBATCH --account=abbott\n'
                     # + '#SBATCH --nodelist=ax20\n'
-                    + f'#SBATCH --output={save_name}.out\n'
+                    + f'#SBATCH --output={save_file}.out\n'
                     + '\n'
                     + '\n'
                     + f'python3 {main_file} --save_name={save_name} '
                     + '\n'
                     + 'exit 0;\n')
-        test_cmd = f'sbatch --qos=high-priority {save_name}.sh'
+        test_cmd = f'sbatch --qos=high-priority {save_file}.sh'
         os.system(test_cmd)
     else:
         test_cmd = f'python3 {main_file} --save_name={save_name}'
@@ -194,14 +195,19 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = leakyrnn_config()
-    for config, save_name in zip(configs, save_names):
-        if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
-            continue
-        save_config(config, save_name)
-        run_main(save_name, num_cpu=1, num_gpu=1)
+    # configs, save_names = leakyrnn_config()
+    # for config, save_name in zip(configs, save_names):
+    #     if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
+    #         continue
+    #     save_config(config, save_name)
+    #     run_main(save_name, num_cpu=1, num_gpu=1)
 
-    # for task_order in ['PsPmAsAm', 'PsAsPmAm']:
-    #     for seed in range(1):
-    #         save_name = f'leakyrnn_v1_proj_relu_{task_order}_AdamWithProj_sd{seed}'
+    for task_order in ['PsPmAsAm', 'PsAsPmAm']:
+        for seed in range(5):
+            save_name = f'INITleakyrnn_v1_proj_relu_{task_order}_AdamWithProj_sd{seed}'
+            run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)
+
+    # for task_order in ['PsPmAs', 'PsAsPm']:
+    #     for seed in range(5):
+    #         save_name = f'cxtrnn_seq_v2_gating3_ioZ_relu_{task_order}_tskm512_sd{seed}'
     #         run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)
