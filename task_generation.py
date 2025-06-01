@@ -596,7 +596,8 @@ def generate_trials(task_list: list,
                     min_Te: int,
                     d_stim=None,
                     trial_order='interleaved',
-                    random_x_order=False):
+                    random_x_order=False,
+                    flip_fixation=False):
 
 
     if d_stim is None:
@@ -638,7 +639,11 @@ def generate_trials(task_list: list,
         x = full_x_list[itrial]
         sy, boundaries = compose_trial(
             task_dict[task_list[c]],
-            {'theta_task': x}, sigma, sigma, p_stay=p_stay, min_Te=min_Te, d_stim=d_stim)
+            {'theta_task': x}, sigma, sig_y=0, p_stay=p_stay, min_Te=min_Te, d_stim=d_stim)
+
+        if flip_fixation:
+            sy['s'][:, -1] = 1 - sy['s'][:, -1]
+            sy['y'][:, -1] = 1 - sy['y'][:, -1]
         trials.append((c, x, sy))
         epoch_boundaries.append(boundaries)
 
