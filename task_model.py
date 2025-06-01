@@ -12,7 +12,7 @@ S_Y_COMBINED_DIM = 8  # dimension of stim + response
 
 
 class TaskModel:
-    def __init__(self, nc, nz, nx, d, n_epochs_each_task, w_fixate, sigma=0.01):
+    def __init__(self, nc, nz, nx, d, n_epochs_each_task, q_fixate, sigma=0.01):
         self.nc = nc
         self.nz = nz
         self.nx = nx
@@ -22,42 +22,42 @@ class TaskModel:
         assert len(n_epochs_each_task) == nc
 
         # initialize parameters
-        self.M = np.ones((nc, nz, nz))
-        self.M /= self.M.sum(axis=-1, keepdims=True)
-        self.W = np.ones((nx, nz, d)) * -10
-        self.p0_z = np.ones(nz)
-        self.p0_z /= self.p0_z.sum()
+        self.Lambda = np.ones((nc, nz, nz))  # transition matrices
+        self.Lambda /= self.Lambda.sum(axis=-1, keepdims=True)
+        self.Q = np.ones((nx, nz, d)) * -10  # observation model parameters
+        self.Pi = np.ones(nz)  # initial probabilities
+        self.Pi /= self.Pi.sum()
 
         # initialize sufficient statistics
         self.transition_counts = np.zeros((nc, nz, nz))
-        self.W_numer = np.zeros((nx, nz, d))
-        self.W_denom = np.zeros((nx, nz))
+        self.Q_numer = np.zeros((nx, nz, d))
+        self.Q_denom = np.zeros((nx, nz))
 
         # other artifacts for dynamic initialization
         self.familiar_cx = np.zeros((nc, nx))
         self.familiar_xz = np.zeros((nx, nz))
-        self.w_fixate = w_fixate.reshape(1, -1)
-        assert w_fixate.shape == (1, d)
+        self.q_fixate = q_fixate.reshape(1, -1)
+        assert q_fixate.shape == (1, d)
 
-    def dynamic_initialize_W(self, trial):
-        self.W, self.familiar_cx, self.familiar_xz = dynamic_initialize_W(
+    def incremental_initialize_Q(self, trial):
+        self.Q, self.familiar_cx, self.familiar_xz = incremental_initialize_Q(
             trial=trial,
-            curr_W=self.W,
+            curr_Q=self.Q,
             num_epochs_each_task=self.n_epochs_each_task,
             familiar_cx=self.familiar_cx,
             familiar_xz=self.familiar_xz,
-            w_fixate=self.w_fixate,
+            q_fixate=self.q_fixate,
             match_criterion=0.2)
         
     
     def learn_single_trial(self, trial, lr=0.1, suff_stats_discount=0.99, iters_per_trial=10):
-        self.M, self.W, self.p0_z, self.W_numer, self.W_denom, self.transition_counts = \
+        self.Lambda, self.Q, self.Pi, self.Q_numer, self.Q_denom, self.transition_counts = \
             _online_learning_single_trial(
-                curr_W=self.W,
-                curr_M=self.M,
-                curr_p0_z=self.p0_z,
-                curr_W_numer=self.W_numer,
-                curr_W_denom=self.W_denom,
+                curr_Q=self.Q,
+                curr_Lambda=self.Lambda,
+                curr_Pi=self.Pi,
+                curr_Q_numer=self.Q_numer,
+                curr_Q_denom=self.Q_denom,
                 curr_transition_counts=self.transition_counts,
                 trial=trial,
                 lr=lr,
@@ -66,7 +66,7 @@ class TaskModel:
                 sigma=self.sigma,
                 x_oracle=False,
                 eps=1e-10,
-                w_update_threshold=1e-3)
+                Q_update_threshold=1e-3)
         
     
     def infer(self, trial, use_y=True, forward_only=False):
@@ -78,9 +78,9 @@ class TaskModel:
         """
         gamma, _, _, LL = get_stats_for_single_trial(
             single_trial=trial,
-            W=self.W,
-            M=self.M,
-            p0_z=self.p0_z,
+            Q=self.Q,
+            Lambda=self.Lambda,
+            Pi=self.Pi,
             x_oracle=False,
             sigma=self.sigma,
             show_y=use_y,
@@ -101,9 +101,9 @@ def _add_with_discount(orig, new, discount):
     return orig * discount + new
 
 
-def offline_learning(init_M,
-                     init_W,
-                     init_p0_z,
+def offline_learning(init_Lambda,
+                     init_Q,
+                     init_Pi,
                      trials,
                      max_iter=100,
                      tol=1e-5,
@@ -113,9 +113,9 @@ def offline_learning(init_M,
 
     """
     Args:
-        init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
-        init_W: initial weight table p(w_t|x, z_t=i): shape (nx, nz, d)
-        init_p0_z: initial distribution of z p(z_1=i): shape (nz,)
+        init_Lambda: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        init_Q: initial weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        init_Pi: initial distribution of z p(z_1=i): shape (nz,)
         trials: list of trials with each trial being a tuple (c, x, sy)
         max_iter: maximum number of iterations
         tol: tolerance for convergence
@@ -123,27 +123,27 @@ def offline_learning(init_M,
         sigma: std of observation noise
     
     Returns:
-        learned_M: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
-        learned_W: learned weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        learned_Lambda: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        learned_Q: learned weight table p(w_t|x, z_t=i): shape (nx, nz, d)
         logp_obsv_arr: log likelihood of all trials over time
         gamma_across_trials: list of gamma for each trial
     """
 
-    nc, nz, _ = init_M.shape
-    nx = init_W.shape[0]
+    nc, nz, _ = init_Lambda.shape
+    nx = init_Q.shape[0]
     n_trials = len(trials)
 
-    learned_W = init_W.copy()  # nx, nz, d
-    learned_M = init_M.copy()  # nc, nz, nz
-    learned_p0_z = init_p0_z.copy()  # nz
+    learned_Q = init_Q.copy()  # nx, nz, d
+    learned_Lambda = init_Lambda.copy()  # nc, nz, nz
+    learned_Pi = init_Pi.copy()  # nz
 
     LLpT_over_time = []
 
     for irun in range(max_iter):
         curr_total_LL = 0
         transition_counts = np.zeros((nc, nz, nz))
-        W_numer = np.zeros((nx, nz, S_Y_COMBINED_DIM))
-        W_denom = np.zeros((nx, nz))
+        Q_numer = np.zeros((nx, nz, S_Y_COMBINED_DIM))
+        Q_denom = np.zeros((nx, nz))
         gamma_across_trials = []
 
         for itrial in range(n_trials):
@@ -152,9 +152,9 @@ def offline_learning(init_M,
 
             gamma, xi, p_cx, LL = get_stats_for_single_trial(
                 single_trial=trials[itrial],
-                W=learned_W,
-                M=learned_M,
-                p0_z=learned_p0_z,
+                Q=learned_Q,
+                Lambda=learned_Lambda,
+                Pi=learned_Pi,
                 x_oracle=x_oracle,
                 sigma=sigma)
             
@@ -163,10 +163,10 @@ def offline_learning(init_M,
             # nc, nx, nz, nT; # nc, nx, nz, nz, nT-1; # nc, nx;
             curr_total_LL += LL
 
-            learned_p0_z += gamma[..., 0].sum((0, 1))
+            learned_Pi += gamma[..., 0].sum((0, 1))
             transition_counts += xi.sum((1, -1))
-            W_numer += gamma.sum(0) @ w_arr  # nx, nz, d
-            W_denom += gamma.sum((0, -1))
+            Q_numer += gamma.sum(0) @ w_arr  # nx, nz, d
+            Q_denom += gamma.sum((0, -1))
 
         # check convergence
         LLpT_over_time.append(curr_total_LL / n_trials)
@@ -175,33 +175,33 @@ def offline_learning(init_M,
                 break
         
         # update parameters
-        learned_p0_z += eps
-        learned_p0_z = learned_p0_z / learned_p0_z.sum()
+        learned_Pi += eps
+        learned_Pi = learned_Pi / learned_Pi.sum()
         transition_counts += eps
-        learned_M = transition_counts / transition_counts.sum(axis=-1, keepdims=True)
-        learned_W = W_numer / (W_denom[..., None] + eps)
+        learned_Lambda = transition_counts / transition_counts.sum(axis=-1, keepdims=True)
+        learned_Q = Q_numer / (Q_denom[..., None] + eps)
     
     # warn if not converged
     if irun == max_iter - 1:
         print('Warning: EM did not converge')
 
-    return learned_M, learned_W, learned_p0_z, LLpT_over_time, gamma_across_trials
+    return learned_Lambda, learned_Q, learned_Pi, LLpT_over_time, gamma_across_trials
 
 
-def _check_for_matching_w(W, w, match_criterion=0.5):
+def _check_for_matching_w(Q, q, match_criterion=0.5):
     """
-    For a given vector w, check if there is a matching row in W.
+    For a given vector q, check if there is a matching row in Q.
     If so, return the indices of the matching rows. 
 
-    Indices are organized as a tuple of arrays. E.g., if W is 3D and 
-    both W[3, 5, :] and W[2, 4 , :] match with w, it would return
+    Indices are organized as a tuple of arrays. E.g., if Q is 3D and 
+    both Q[3, 5, :] and Q[2, 4 , :] match with q, it would return
     (array([3, 2]), array([5, 4])).
 
-    A "match" is defined as a row in W that is within match_criterion of w in
+    A "match" is defined as a row in Q that is within match_criterion of q in
     terms of Euclidean distance.
     """
-    # assert W.shape[-1] == len(w)
-    dist = np.linalg.norm(W - w, axis=-1)
+    # assert Q.shape[-1] == len(q)
+    dist = np.linalg.norm(Q - q, axis=-1)
 
     matches = np.where(dist < match_criterion)
     return matches
@@ -225,31 +225,31 @@ def _get_ordered_clusters(obs: np.array, n_clusters: int):
     return np.array(ordered_clusters)
 
 
-def dynamic_initialize_W(trial,
-                         curr_W,
+def incremental_initialize_Q(trial,
+                         curr_Q,
                          num_epochs_each_task: np.array,
                          familiar_cx: np.array,
                          familiar_xz: np.array,
-                         w_fixate,
+                         q_fixate,
                          match_criterion=0.5):
     """
-    Initialize W (parameters of the observation models) dynamically for each
+    Initialize Q (parameters of the observation models) dynamically for each
     trial.
 
     Args:
         trial: tuple (c, x, sy)
-        curr_W: current W; shape (nx, nz, d)
+        curr_Q: current Q; shape (nx, nz, d)
         num_epochs_each_task: list of number of epochs for each task
         familiar_cx: p(c, x) indicating if a (c, x) pair has been seen before
         familiar_xz: p(x, z) indicating if a (x, z) pair has been seen before
-        w_fixate: the fixation/delay epoch for the current task
+        q_fixate: the fixation/delay epoch for the current task
         match_criterion: distance threshold for matching clusters
     """
 
     DEBUG_MODE = False
     
     # get some dimensions for sanity checks
-    nx, nz, _ = curr_W.shape
+    nx, nz, _ = curr_Q.shape
 
     
     
@@ -259,7 +259,7 @@ def dynamic_initialize_W(trial,
     
     # hard code the 0th epoch as the F/D epoch. This just breaks the permutation
     # symmetry in a consistent manner
-    curr_W[:, 0, :] = w_fixate
+    curr_Q[:, 0, :] = q_fixate
     familiar_xz[:, 0] = 1
 
     c, _, sy = trial
@@ -275,9 +275,9 @@ def dynamic_initialize_W(trial,
     ordered_clusters = _get_ordered_clusters(obs, num_epochs_each_task[c])
 
     # remove clusters matching the fixation/delay epoch
-    dist_from_w_fixate = np.linalg.norm(ordered_clusters - w_fixate, axis=-1)
+    dist_from_q_fixate = np.linalg.norm(ordered_clusters - q_fixate, axis=-1)
     
-    non_fixate_clusters = ordered_clusters[dist_from_w_fixate > match_criterion]
+    non_fixate_clusters = ordered_clusters[dist_from_q_fixate > match_criterion]
 
     # find the putative x for this trial    
     putative_x = None
@@ -287,9 +287,9 @@ def dynamic_initialize_W(trial,
     n_clusters_matched_to_this_x = np.zeros(nx)
     matched_xs_for_each_cluster = []
 
-    for w in non_fixate_clusters:
+    for q in non_fixate_clusters:
         matched_xs, matched_zs = _check_for_matching_w(
-            curr_W, w, match_criterion)
+            curr_Q, q, match_criterion)
         n_clusters_matched_to_this_x[matched_xs] += 1
 
         if len(matched_xs) > 0:
@@ -336,7 +336,7 @@ def dynamic_initialize_W(trial,
 
 
 
-    # none of the clusters matched anything in W. In which case we arbitrarily
+    # none of the clusters matched anything in Q. In which case we arbitrarily
     # assign an unseen x. We just assign the first unfamiliar x under this c.
     # Again, no right answer here. just break the symmetry in a consistent manner.
     else:
@@ -351,7 +351,7 @@ def dynamic_initialize_W(trial,
         unmatched_clusters = []
         for center in non_fixate_clusters:
             (matched_zs, ) = _check_for_matching_w(
-                curr_W[putative_x], center, match_criterion)
+                curr_Q[putative_x], center, match_criterion)
             if len(matched_zs) == 0:
                 unmatched_clusters.append(center)
 
@@ -372,8 +372,8 @@ def dynamic_initialize_W(trial,
                 'seen epoch is not correctly marked as familiar and' \
                 'incorrectly marked as "unmatched". Try setting DEBUG_MODE=True'
 
-            for j, w in enumerate(unmatched_clusters):
-                curr_W[putative_x, available_z_slots[j]] = w
+            for j, q in enumerate(unmatched_clusters):
+                curr_Q[putative_x, available_z_slots[j]] = q
                 familiar_xz[putative_x, available_z_slots[j]] = 1
 
             # mark this (c, x) pair as familiar
@@ -382,13 +382,13 @@ def dynamic_initialize_W(trial,
     # the uninitialized weights are set to a large negative number
     mask = np.repeat(familiar_xz[:, :, None] == 0, 
                      S_Y_COMBINED_DIM, axis=-1)
-    curr_W[mask] = -10
-    return curr_W, familiar_cx, familiar_xz
+    curr_Q[mask] = -10
+    return curr_Q, familiar_cx, familiar_xz
 
 
-def online_learning(init_M, 
-                    init_W,
-                    init_p0_z,
+def online_learning(init_Lambda, 
+                    init_Q,
+                    init_Pi,
                     trials,
                     n_sweeps=1,
                     sigma=0.01,
@@ -397,12 +397,12 @@ def online_learning(init_M,
                     iters_per_trial=10,
                     x_oracle=False,
                     eps=1e-10,
-                    w_update_threshold=1e-3):
+                    Q_update_threshold=1e-3):
     """
     Args:
-        init_M: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
-        init_W: initial weight table p(w_t|x, z_t=i): shape (nx, nz, d)
-        init_p0_z: initial distribution of z p(z_1=i): shape (nz,)
+        init_Lambda: initial transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        init_Q: initial weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        init_Pi: initial distribution of z p(z_1=i): shape (nz,)
         trials: list of trials with each trial being a tuple (c, x, sy)
         n_sweeps: number of sweeps (for true online learning, set to 1)
         sigma: std of observation noise
@@ -410,43 +410,43 @@ def online_learning(init_M,
         suff_stats_discount: discount factor for sufficient statistics
         iters_per_trial: number of iterations per trial
         eps: small constant for numerical stability
-        w_update_threshold: only update w params if the total expected visits of
+        Q_update_threshold: only update q params if the total expected visits of
           this state in the current trial exceeds this value; prevents decay of
-          w params on rarely visited states
+          q params on rarely visited states
     
     Returns:
-        learned_M: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
-        learned_W: learned weight table p(w_t|x, z_t=i): shape (nx, nz, d)
+        learned_Lambda: learned transition matrix p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        learned_Q: learned weight table p(w_t|x, z_t=i): shape (nx, nz, d)
         LLpT_over_time: log likelihood of all trials over time
         gamma_across_trials: list of gamma for each trial (using the final parameters)
     """
 
-    nc, nz, _ = init_M.shape
-    nx = init_W.shape[0]
+    nc, nz, _ = init_Lambda.shape
+    nx = init_Q.shape[0]
 
-    learned_W = init_W.copy()
-    learned_M = init_M.copy()
-    learned_p0_z = init_p0_z.copy()
+    learned_Q = init_Q.copy()
+    learned_Lambda = init_Lambda.copy()
+    learned_Pi = init_Pi.copy()
 
     LLpT_over_time = []
 
     # initialize sufficient statistics
     transition_counts = np.zeros((nc, nz, nz))
-    W_numer = np.zeros((nx, nz, S_Y_COMBINED_DIM))
-    W_denom = np.zeros((nx, nz))
+    Q_numer = np.zeros((nx, nz, S_Y_COMBINED_DIM))
+    Q_denom = np.zeros((nx, nz))
 
     for i in range(n_sweeps):
         
         for itrial in range(len(trials)):
             
-            (learned_M, learned_W,
-             learned_p0_z, W_numer,
-             W_denom, transition_counts) = _online_learning_single_trial(
-                curr_W=learned_W,
-                curr_M=learned_M,
-                curr_p0_z=learned_p0_z,
-                curr_W_numer=W_numer,
-                curr_W_denom=W_denom,
+            (learned_Lambda, learned_Q,
+             learned_Pi, Q_numer,
+             Q_denom, transition_counts) = _online_learning_single_trial(
+                curr_Q=learned_Q,
+                curr_Lambda=learned_Lambda,
+                curr_Pi=learned_Pi,
+                curr_Q_numer=Q_numer,
+                curr_Q_denom=Q_denom,
                 curr_transition_counts=transition_counts,
                 trial=trials[itrial],
                 lr=lr,
@@ -455,24 +455,24 @@ def online_learning(init_M,
                 sigma=sigma,
                 x_oracle=x_oracle,
                 eps=eps,
-                w_update_threshold=w_update_threshold)
+                Q_update_threshold=Q_update_threshold)
 
             if itrial % 10 == 0:
                 # evaluate the final parameters on all the trials
                 gamma_across_trials, curr_LLpT, _ = get_stats_for_multiple_trials(
-                    trials, learned_W, learned_M, learned_p0_z, sigma, x_oracle)
+                    trials, learned_Q, learned_Lambda, learned_Pi, sigma, x_oracle)
 
                 LLpT_over_time.append(curr_LLpT)
 
 
-    return learned_M, learned_W, learned_p0_z, LLpT_over_time, gamma_across_trials
+    return learned_Lambda, learned_Q, learned_Pi, LLpT_over_time, gamma_across_trials
 
 
 def get_stats_for_single_trial(
         single_trial: tuple,
-        W: np.ndarray,
-        M: np.ndarray,
-        p0_z: np.ndarray,
+        Q: np.ndarray,
+        Lambda: np.ndarray,
+        Pi: np.ndarray,
         x_oracle: bool,
         sigma: float,
         show_y=True,
@@ -481,9 +481,9 @@ def get_stats_for_single_trial(
 
     Args:
         single_trial: tuple (c, x, sy)
-        W: p(w_t|x, z_t=i): shape (nx, nz, d)
-        M: p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
-        p0_z: p(z_1=i): shape (nz,)
+        Q: p(w_t|x, z_t=i): shape (nx, nz, d)
+        Lambda: p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        Pi: p(z_1=i): shape (nz,)
         prior_cx: p(c, x): shape (nc, nx)
         sigma: std of observation noise
         show_y: if True, use both s and y for inference; else use only s
@@ -496,10 +496,10 @@ def get_stats_for_single_trial(
         LL: log p(w_{1:T}): shape None
     """
 
-    nx, nz, _ = W.shape
-    nc = M.shape[0]
-    assert M.shape[1:] == (nz, nz)
-    assert p0_z.shape == (nz,)
+    nx, nz, _ = Q.shape
+    nc = Lambda.shape[0]
+    assert Lambda.shape[1:] == (nz, nz)
+    assert Pi.shape == (nz,)
     assert sigma > 0
     
     c, x, sy = single_trial
@@ -523,27 +523,27 @@ def get_stats_for_single_trial(
 
     if show_y:
         log_likes = multivariate_log_likelihood(
-                    obs=obs[None, None, :, :], mean=W[:, :, None, :],
+                    obs=obs[None, None, :, :], mean=Q[:, :, None, :],
                     sigma=sigma)
     
     else:
         log_likes = multivariate_log_likelihood(
-                    obs=obs[None, None, :, :], mean=W[:, :, None, :obs.shape[1]],
+                    obs=obs[None, None, :, :], mean=Q[:, :, None, :obs.shape[1]],
                     sigma=sigma)
     
     assert log_likes.shape == (nx, nz, nT)
 
     gamma, xi, p_cx, LL = forward_backward(
-        p0_z, M, log_likes, prior_cx=prior_cx, forward_only=forward_only)
+        Pi, Lambda, log_likes, prior_cx=prior_cx, forward_only=forward_only)
 
     return gamma, xi, p_cx, LL
 
 
 def get_stats_for_multiple_trials(
         trials,
-        W,
-        M,
-        p0_z,
+        Q,
+        Lambda,
+        Pi,
         sigma,
         x_oracle):
     """
@@ -552,9 +552,9 @@ def get_stats_for_multiple_trials(
     
     Args:
         trials: list of trials with each trial being a tuple (c, x, sy)
-        W: p(w_t|x, z_t=i): shape (nx, nz, d)
-        M: p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
-        p0_z: p(z_1=i): shape (nz,)
+        Q: p(w_t|x, z_t=i): shape (nx, nz, d)
+        Lambda: p(z_t=i, z_{t+1}=j|c): shape (nc, nz, nz)
+        Pi: p(z_1=i): shape (nz,)
         sigma: std of observation noise
     
     Returns:
@@ -569,7 +569,7 @@ def get_stats_for_multiple_trials(
 
         gamma, _, _, LL = get_stats_for_single_trial(
             single_trial=trials[itrial],
-            W=W, M=M, p0_z=p0_z, x_oracle=x_oracle, sigma=sigma)
+            Q=Q, Lambda=Lambda, Pi=Pi, x_oracle=x_oracle, sigma=sigma)
         LL_across_trials.append(LL)
         gamma_across_trials.append(gamma)
 
@@ -580,11 +580,11 @@ def get_stats_for_multiple_trials(
 
 
 def _online_learning_single_trial(
-    curr_W,
-    curr_M,
-    curr_p0_z,
-    curr_W_numer,
-    curr_W_denom,
+    curr_Q,
+    curr_Lambda,
+    curr_Pi,
+    curr_Q_numer,
+    curr_Q_denom,
     curr_transition_counts,
     trial,
     lr,
@@ -592,18 +592,18 @@ def _online_learning_single_trial(
     iters_per_trial,
     sigma,
     x_oracle,
-    w_update_threshold=1e-3,
+    Q_update_threshold=1e-3,
     eps=1e-10):
 
     c, x, sy = trial
     w_arr = np.concatenate((sy['s'], sy['y']), axis=-1)
 
-    learned_W_this_trial = curr_W.copy()
-    learned_M_this_trial = curr_M.copy()
-    learned_p0_z_this_trial = curr_p0_z.copy()
+    learned_Q_this_trial = curr_Q.copy()
+    learned_Lambda_this_trial = curr_Lambda.copy()
+    learned_Pi_this_trial = curr_Pi.copy()
 
-    W_numer_this_trial = None
-    W_denom_this_trial = None
+    Q_numer_this_trial = None
+    Q_denom_this_trial = None
     transition_counts_this_trial = None
 
     for iiter in range(iters_per_trial):
@@ -611,58 +611,58 @@ def _online_learning_single_trial(
         # get sufficient statistics for this trial
         gamma, xi, _, _ = get_stats_for_single_trial(
             single_trial=trial,
-            W=learned_W_this_trial,
-            M=learned_M_this_trial, 
-            p0_z=learned_p0_z_this_trial,
+            Q=learned_Q_this_trial,
+            Lambda=learned_Lambda_this_trial, 
+            Pi=learned_Pi_this_trial,
             x_oracle=x_oracle,
             sigma=sigma)
         
         # sufficient stats at each iter is a combination of those from the
         #  previous trial and those from the current iter
-        W_numer_this_trial = _add_with_discount(
-            curr_W_numer, gamma.sum(0) @ w_arr, suff_stats_discount)
-        W_denom_this_trial = _add_with_discount(
-            curr_W_denom, gamma.sum((0, -1)), suff_stats_discount)
+        Q_numer_this_trial = _add_with_discount(
+            curr_Q_numer, gamma.sum(0) @ w_arr, suff_stats_discount)
+        Q_denom_this_trial = _add_with_discount(
+            curr_Q_denom, gamma.sum((0, -1)), suff_stats_discount)
         transition_counts_this_trial = _add_with_discount(
             curr_transition_counts, xi.sum((1, -1)), suff_stats_discount) + eps
 
-        # only decay/update parts of W that are visited a lot
-        W_update_mask = np.repeat(
-            W_denom_this_trial[..., None] > w_update_threshold,
+        # only decay/update parts of Q that are visited a lot
+        Q_update_mask = np.repeat(
+            Q_denom_this_trial[..., None] > Q_update_threshold,
             S_Y_COMBINED_DIM, axis=-1)
         
-        # only decay/update parts of M corresponding to the current c
-        M_update_mask = np.zeros((curr_M.shape[0],))
-        M_update_mask[c] = 1
-        M_update_mask = M_update_mask == 1
+        # only decay/update parts of Lambda corresponding to the current c
+        Lambda_update_mask = np.zeros((curr_Lambda.shape[0],))
+        Lambda_update_mask[c] = 1
+        Lambda_update_mask = Lambda_update_mask == 1
 
         # update parameters
-        learned_M_this_trial = _update(
-            curr_M,
+        learned_Lambda_this_trial = _update(
+            curr_Lambda,
             (transition_counts_this_trial /
              transition_counts_this_trial.sum(axis=-1, keepdims=True)),
-            lr, mask=M_update_mask)
+            lr, mask=Lambda_update_mask)
 
-        learned_W_this_trial = _update(
-            curr_W,
-            W_numer_this_trial / (W_denom_this_trial[..., None] + eps),
+        learned_Q_this_trial = _update(
+            curr_Q,
+            Q_numer_this_trial / (Q_denom_this_trial[..., None] + eps),
             lr,
-            mask=W_update_mask)
-        learned_p0_z_this_trial = _update(
-            curr_p0_z,
+            mask=Q_update_mask)
+        learned_Pi_this_trial = _update(
+            curr_Pi,
             gamma[..., 0].sum((0, 1)),
             lr)
 
     # store stats/params after this trial
-    W_numer = W_numer_this_trial.copy()
-    W_denom = W_denom_this_trial.copy()
+    Q_numer = Q_numer_this_trial.copy()
+    Q_denom = Q_denom_this_trial.copy()
     transition_counts = transition_counts_this_trial.copy()
 
-    learned_M = learned_M_this_trial.copy()
-    learned_W = learned_W_this_trial.copy()
-    learned_p0_z = learned_p0_z_this_trial.copy()
+    learned_Lambda = learned_Lambda_this_trial.copy()
+    learned_Q = learned_Q_this_trial.copy()
+    learned_Pi = learned_Pi_this_trial.copy()
 
-    return learned_M, learned_W, learned_p0_z, W_numer, W_denom, transition_counts
+    return learned_Lambda, learned_Q, learned_Pi, Q_numer, Q_denom, transition_counts
 
 
 def _log(x):
@@ -672,7 +672,7 @@ def _log(x):
     return output
 
 
-def viterbi(p0_z, transition_matrix, log_likes):
+def viterbi(Pi, transition_matrix, log_likes):
     nc, nz, _ = transition_matrix.shape
     nx, _, nT = log_likes.shape
     scores = np.zeros((nc, nx, nz, nT))
@@ -682,7 +682,7 @@ def viterbi(p0_z, transition_matrix, log_likes):
         vals = _log(transition_matrix[:, None, :, :]) + vals[:, :, None, :]
         args[..., it + 1] = np.argmax(vals, axis=-1)
         scores[..., it] = np.max(vals, axis=-1)
-    scores_ = _log(p0_z) + scores[..., 0] + log_likes[..., 0]
+    scores_ = _log(Pi) + scores[..., 0] + log_likes[..., 0]
     ind_ = np.unravel_index(np.argmax(scores_, axis=None), scores_.shape)
     z_ = np.zeros(nT, dtype=int)
     z_[0] = ind_[2]
@@ -691,11 +691,11 @@ def viterbi(p0_z, transition_matrix, log_likes):
     return ind_, z_
 
 
-def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None, forward_only=False):
+def forward_backward(Pi, transition_matrix, log_likes, prior_cx=None, forward_only=False):
     nc, nz, _ = transition_matrix.shape
     nx, _, nT = log_likes.shape
     alpha = np.zeros((nc, nx, nz, nT))
-    alpha[..., 0] = _log(p0_z) + log_likes[..., 0]
+    alpha[..., 0] = _log(Pi) + log_likes[..., 0]
     for it in range(nT - 1):
         m = np.max(alpha[..., it], axis=-1, keepdims=True)
         with np.errstate(divide='ignore'):
@@ -722,15 +722,15 @@ def forward_backward(p0_z, transition_matrix, log_likes, prior_cx=None, forward_
     # p(z_t=i, c, x | w_{1:T}): shape (nc, nx, nz, nT)
 
     if forward_only:
-        # in this case we want gamma to be p(c_t, z_t, x_t|w{1:t}), but the 
-        # expression below is actually p(c_t, z_t, x_t, w{1:t}) and we don't 
-        # have p(w{1:t}) in the denominator. So we need to normalize it manually.
+        # in this case we want gamma to be p(c_t, z_t, x_t|q{1:t}), but the 
+        # expression below is actually p(c_t, z_t, x_t, q{1:t}) and we don't 
+        # have p(q{1:t}) in the denominator. So we need to normalize it manually.
         gamma = alpha + beta + _log(prior_cx[:, :, None, None])
         gamma = gamma - logsumexp(gamma, axis=(0, 1, 2), keepdims=True)
         gamma = np.exp(gamma)
     
     else:
-        # in this case the normalization factor is p(w{1:T}), which we have,
+        # in this case the normalization factor is p(q{1:T}), which we have,
         # so we can just use the expression below.
         gamma = alpha + beta + _log(prior_cx[:, :, None, None]) - logp_obsv
         gamma = np.exp(gamma)

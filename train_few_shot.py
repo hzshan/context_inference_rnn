@@ -60,7 +60,7 @@ def train_cxtrnn_sequential_few_shot(save_name):
             s_[:, -1] = 1 - s_[:, -1]
             y_[:, -1] = 1 - y_[:, -1]
         trial_ = (itask_new, None, {'s': s_, 'y': y_})
-        task_model.dynamic_initialize_W(trial_)
+        task_model.incremental_initialize_Q(trial_)
         task_model.learn_single_trial(trial_)
         ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model, strict=strict)
         ts_loss_arr.append(ts_loss)
@@ -159,4 +159,3 @@ if __name__ == '__main__':
         train_cxtrnn_sequential_few_shot(save_name)
     else:
         train_leakyrnn_sequential_few_shot(save_name)
-

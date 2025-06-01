@@ -288,12 +288,12 @@ def set_deterministic(seed):
 @torch.no_grad()
 def task_model_inference(task_model, c, obs):
     device = obs.device
-    W = torch.tensor(task_model.W, device=device).float()
-    M = torch.tensor(task_model.M, device=device).float()
-    p0_z = torch.tensor(task_model.p0_z, device=device).float()
+    Q = torch.tensor(task_model.Q, device=device).float()
+    Lambda = torch.tensor(task_model.Lambda, device=device).float()
+    Pi = torch.tensor(task_model.Pi, device=device).float()
     sigma = task_model.sigma
     ###############
-    nc, nx = M.shape[0], W.shape[0]
+    nc, nx = Lambda.shape[0], Q.shape[0]
     prior_cx = torch.zeros((nc, nx), device=device)
     prior_cx[c] = 1
     prior_cx /= prior_cx.sum()
@@ -303,16 +303,16 @@ def task_model_inference(task_model, c, obs):
     obs = obs.permute(1, 0, 2) # nb, nT, k
     ###############
     # nb, nx, nz, nT
-    sq_dist = torch.sum(torch.square(W[None, :, :, None, :k] - obs[:, None, None, :, :]), dim=-1)
+    sq_dist = torch.sum(torch.square(Q[None, :, :, None, :k] - obs[:, None, None, :, :]), dim=-1)
     log_likes = - torch.log(torch.tensor(2 * torch.pi * sigma ** 2).float()) * k / 2 - sq_dist / (2 * sigma ** 2)
     ################
-    nz = M.shape[1]
+    nz = Lambda.shape[1]
     alpha = torch.zeros((nb, nc, nx, nz, nT), device=device)
-    alpha[..., 0] = torch.log(p0_z) + log_likes[:, None, :, :, 0]
+    alpha[..., 0] = torch.log(Pi) + log_likes[:, None, :, :, 0]
     for it in range(nT - 1):
         m = torch.max(alpha[..., it], dim=-1, keepdim=True).values
         alpha[..., it + 1] = torch.log(torch.einsum('bcxi,cij->bcxj', torch.exp(alpha[..., it] - m),
-                                        M)) + m + log_likes[:, None, :, :, it + 1]
+                                        Lambda)) + m + log_likes[:, None, :, :, it + 1]
     gamma = alpha + torch.log(prior_cx[None, :, :, None, None])
     gamma = gamma - torch.logsumexp(gamma, dim=(1, 2, 3), keepdim=True)
     gamma = torch.exp(gamma)
@@ -431,10 +431,10 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
     task_model = None
     if use_task_model:
         n_epochs_each_task = [len(set(task_epoch(task, epoch_type=epoch_type).split('->'))) for task in task_list]
-        w_fixate = make_delay_or_fixation_epoch({}, 1, 0, 0, d_stim=d_stim)
-        w_fixate = np.concatenate([w_fixate['s'], w_fixate['y']], axis=1)
-        task_model = TaskModel(nc=len(task_list), nz=len(z_list), nx=nx, sigma=sig_s, d=w_fixate.shape[-1],
-                               n_epochs_each_task=n_epochs_each_task, w_fixate=w_fixate)
+        q_fixate = make_delay_or_fixation_epoch({}, 1, 0, 0, d_stim=d_stim)
+        q_fixate = np.concatenate([q_fixate['s'], q_fixate['y']], axis=1)
+        task_model = TaskModel(nc=len(task_list), nz=len(z_list), nx=nx, sigma=sig_s, d=q_fixate.shape[-1],
+                               n_epochs_each_task=n_epochs_each_task, q_fixate=q_fixate)
     ###########################################
     loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
     ts_loss, ts_perf, ts_err = evaluate(model, ts_data_loaders, loss_kwargs, task_model=task_model, strict=strict)
@@ -466,7 +466,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                             s_[:, -1] = 1 - s_[:, -1]
                             y_[:, -1] = 1 - y_[:, -1]
                         trial_ = (itask, None, {'s': s_, 'y': y_})
-                        task_model.dynamic_initialize_W(trial_)
+                        task_model.incremental_initialize_Q(trial_)
                         task_model.learn_single_trial(trial_)
             #################################################
             tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
