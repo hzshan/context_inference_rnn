@@ -56,8 +56,8 @@ def cxtrnn_config():
                   train_fn='train_cxtrnn_sequential')
     config_ranges = {
         #################
-        'gating_type': [3, 5, 10], #[5, 10],
-        'nonlin': ['tanh', 'relu'],  # 'tanh', 'relu'
+        'gating_type': [3], #[5, 10],
+        'nonlin': ['tanh'],  # 'tanh', 'relu'
         ######################
         # 'task_list': task_pairs,
         # 'task_list': [['ANTI_M'], ['PRO_M', 'ANTI_M'], ['ANTI_D', 'ANTI_M'], ['ANTI_DM', 'ANTI_M']],
@@ -67,13 +67,13 @@ def cxtrnn_config():
             # ['PRO_M', 'ANTI_S', 'PRO_S', 'ANTI_M'],
             # ['PRO_S', 'ANTI_S', 'PRO_M'],  # 'ANTI_M'
             # ['PRO_S', 'PRO_M', 'ANTI_S'],  # 'ANTI_M'
-            ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
-            ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
+            # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
         # 'mixed_train': [True],
-        # 'alpha': [0.2],
+        'alpha': [0.2],
         ##########################
         'strict': [True],
         'save_ckpt': [False],
@@ -83,7 +83,7 @@ def cxtrnn_config():
         'use_task_model': [True],
         'task_model_ntrials': [512],
         ############################
-        'seed': [0, 1, 2, 3, 4],
+        'seed': [0], #, 1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -197,10 +197,10 @@ def leakyrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = leakyrnn_config()
+    configs, save_names = cxtrnn_config()
     for config, save_name in zip(configs, save_names):
-        if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
-            continue
+        # if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
+        #     continue
         save_config(config, save_name)
         run_main(save_name, num_cpu=1, num_gpu=1)
 
