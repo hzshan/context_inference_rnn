@@ -22,9 +22,9 @@ def train_cxtrnn_sequential_few_shot(save_name):
     config['task_list'] += [task_new]
     task_model.nc += 1
     nz = task_model.nz
-    M_pad = np.ones((1, nz, nz))
-    M_pad /= M_pad.sum(axis=-1, keepdims=True)
-    task_model.M = np.concatenate((task_model.M, M_pad), axis=0)
+    Lambda_pad = np.ones((1, nz, nz))
+    Lambda_pad /= Lambda_pad.sum(axis=-1, keepdims=True)
+    task_model.Lambda = np.concatenate((task_model.Lambda, Lambda_pad), axis=0)
     task_model.transition_counts = np.concatenate((task_model.transition_counts,
                                                    np.zeros((1, nz, nz))), axis=0)
     task_model.familiar_cx = np.concatenate((task_model.familiar_cx,
