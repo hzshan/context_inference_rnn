@@ -12,6 +12,32 @@ S_Y_COMBINED_DIM = 8  # dimension of stim + response
 
 
 class TaskModel:
+
+    def __setstate__(self, state):
+        # adapter for unpickling trained models with old variable names
+
+        # detects old models that were named with W and W_denom
+        if 'W' in state.keys() and 'W_denom' in state.keys():
+            print('Old model!')
+            self.nc = state['nc']
+            self.nz = state['nz']
+            self.nx = state['nx']
+            self.d = state['d']
+            self.n_epochs_each_task = state['n_epochs_each_task']
+            self.sigma = state['sigma']
+            self.Lambda = state['M']
+            self.Q = state['W']
+            self.Pi = state['p0_z']
+
+            self.transition_counts = state['transition_counts']
+            self.Q_numer = state['W_numer']
+            self.Q_denom = state['W_denom']
+            self.familiar_cx = state['familiar_cx']
+            self.familiar_xz = state['familiar_xz']
+            self.q_fixate = state['w_fixate']
+        else:
+            self.__dict__.update(state)
+
     def __init__(self, nc, nz, nx, d, n_epochs_each_task, q_fixate, sigma=0.01):
         self.nc = nc
         self.nz = nz
