@@ -73,7 +73,6 @@ class CXTRNN(nn.Module):
         self.b_in = nn.Parameter(torch.zeros(num_io, dim_hid))
         self.W_out = nn.Parameter(torch.randn(num_io, dim_y, dim_hid) * math.sqrt(2 / (dim_hid + dim_y)))
         self.b_out = nn.Parameter(torch.zeros(num_io, dim_y))
-        self.activation = torch.tanh
         if gating_type in ['l', 'nl']:
             self.nm_layer = nn.Linear(dim_z, rank)
         self.alpha = alpha
@@ -893,13 +892,156 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
     return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
 
+class NMRNN(nn.Module):
+    def __init__(self, dim_s=5, dim_y=3, dim_c=5, dim_z=50, dim_h=50, rank=3, sig_r=0,
+                 alpha_z=0.01, alpha_h=0.1, nonlin='tanh', **kwargs):
+        super(NMRNN, self).__init__()
+        self.dim_z = dim_z
+        self.rank = rank
+        self.dim_h = dim_h
+        self.alpha_z = alpha_z
+        self.alpha_h = alpha_h
+        self.sig_r = sig_r
+        self.W_zz = nn.Parameter(torch.randn(dim_z, dim_z) * math.sqrt(1 / dim_z))
+        self.Wz_in = nn.Parameter(torch.randn(dim_z, dim_s + dim_c) * math.sqrt(2 / (dim_z + dim_s + dim_c)))
+        self.bz_in = nn.Parameter(torch.zeros(dim_z))
+        self.Wz_out = nn.Parameter(torch.randn(rank, dim_z) * math.sqrt(2 / (rank + dim_z)))
+        self.bz_out = nn.Parameter(torch.zeros(rank))
+        init_scale = (1 / dim_h) ** 0.25 / math.sqrt(rank)
+        self.U = nn.Parameter(torch.randn(dim_h, rank) * init_scale)
+        self.V = nn.Parameter(torch.randn(dim_h, rank) * init_scale)
+        self.W_in = nn.Parameter(torch.randn(dim_h, dim_s) * math.sqrt(2 / (dim_h + dim_s)))
+        self.b_in = nn.Parameter(torch.zeros(dim_h))
+        self.W_out = nn.Parameter(torch.randn(dim_y, dim_h) * math.sqrt(2 / (dim_h + dim_y)))
+        self.b_out = nn.Parameter(torch.zeros(dim_y))
+        self.nonlin = getattr(F, nonlin) if nonlin != 'linear' else (lambda a: a)
+
+    def step(self, s_t, c_t, state_z, state_h):
+        tmp = self.nonlin(state_z) @ self.W_zz.T + torch.cat([s_t, c_t], dim=-1) @ self.Wz_in.T + self.bz_in
+        tmp = tmp + math.sqrt(2 / self.alpha_z) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
+        state_z = (1 - self.alpha_z) * state_z + self.alpha_z * tmp
+        signal_z = torch.sigmoid(state_z @ self.Wz_out.T + self.bz_out)
+        tmp = torch.einsum('br,hr,kr,bk->bh', signal_z, self.U, self.V, self.nonlin(state_h))
+        tmp = tmp + s_t @ self.W_in.T + self.b_in
+        tmp = tmp + math.sqrt(2 / self.alpha_h) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
+        state_h = (1 - self.alpha_h) * state_h + self.alpha_h * tmp
+        output = self.nonlin(state_h) @ self.W_out.T + self.b_out
+        return output, state_z, state_h
+
+    def forward(self, s, c):
+        seq_len, batch_size, _ = s.shape
+        outputs, states_z, states_h = [], [], []
+        state_z = torch.zeros(batch_size, self.dim_z, device=s.device)
+        state_h = torch.zeros(batch_size, self.dim_h, device=s.device)
+        for t in range(seq_len):
+            output, state_z, state_h = self.step(s[t], c[t], state_z, state_h)
+            outputs.append(output)
+            states_z.append(state_z)
+            states_h.append(state_h)
+        outputs = torch.stack(outputs, dim=0)
+        states_z = torch.stack(states_z, dim=0)
+        states_h = torch.stack(states_h, dim=0)
+        states = torch.cat([states_z, states_h], dim=-1)
+        return outputs, states
+
+
+def train_nmrnn_sequential(seed=0, dim_s=5, dim_y=3, dim_z=50, dim_h=100, rank=5, sig_r=0,
+                           alpha_z=0.01, alpha_h=0.1, nonlin='tanh',
+                           w_fix=1, n_skip=0, reg_act=0, strict=True,
+                           optim='Adam', reset_optim=False, lr=0.01, weight_decay=0,
+                           batch_size=256, num_iter=500, n_trials_ts=200,
+                           sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
+                           epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
+                           task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'], mixed_train=False,
+                           verbose=True, ckpt_step=10,
+                           save_dir=None, retrain=True, save_ckpt=False, save_after_itask=-1, **kwargs):
+    set_deterministic(seed)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = NMRNN(dim_s=dim_s, dim_y=dim_y, dim_c=len(task_list), dim_z=dim_z, dim_h=dim_h,
+                  rank=rank, sig_r=sig_r, alpha_z=alpha_z, alpha_h=alpha_h, nonlin=nonlin).to(device)
+    if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
+        save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
+        model.load_state_dict(save_dict)
+        tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
+        ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
+        perf_sfx = '_strict' if strict else ''
+        ts_perf_arr = np.load(save_dir + f'/ts_perf{perf_sfx}.npy')
+        return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
+
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
+    data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=None, task_list=task_list,
+                       sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
+                       epoch_type=epoch_type, fixation_type=fixation_type,
+                       info_type=info_type, min_Te_R=min_Te_R, p_stay_R=p_stay_R)
+    ts_data_loaders = []
+    for itask, task in enumerate(task_list):
+        ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
+        ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
+        ts_data_loaders.append(ts_data_loader)
+
+    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
+    ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
+    tr_loss_arr = [ts_loss[0]]
+    ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
+    ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
+    ckpt_list = [deepcopy(model.state_dict())]
+
+    optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
+    for itask, task in enumerate(task_list):
+        if mixed_train:
+            task = 'all'
+        if reset_optim:
+            optimizer = getattr(torch.optim, optim)(model.named_parameters(), lr=lr, weight_decay=weight_decay)
+        for i_iter in range(num_iter):
+            tr_dataset = TaskDataset(n_trials=batch_size, task=task, **data_kwargs)
+            tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
+            model.train()
+            for ib, cur_batch in enumerate(tr_data_loader):
+                syz, lengths = cur_batch
+                syz = syz.to(device)
+                s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+                out, states = model(s, z)
+                loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            if (i_iter + 1) % ckpt_step == 0:
+                tr_loss_arr.append(loss.item())
+                if verbose:
+                    print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
+                ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
+                for itask_ts, task_ts in enumerate(task_list):
+                    ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
+                    ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
+                    if verbose:
+                        print(f'test on task {task_ts}: loss {ts_loss[itask_ts]:.4f}, '
+                              f'perf {ts_perf[itask_ts]:.4f}', flush=True)
+                if save_ckpt:
+                    ckpt_list.append(deepcopy(model.state_dict()))
+        if itask == save_after_itask and save_dir is not None:
+            save_sfx = f'after_itask{itask}'
+            torch.save(model.state_dict(), save_dir + f'/model_{save_sfx}.pth')
+        ################################################
+    tr_loss_arr = np.array(tr_loss_arr)
+    ts_loss_arr = np.array(ts_loss_arr)
+    ts_perf_arr = np.array(ts_perf_arr)
+    if save_dir is not None:
+        torch.save(model.state_dict(), save_dir + '/model.pth')
+        torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
+        np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
+        np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
+        perf_sfx = '_strict' if strict else ''
+        np.save(save_dir + f'/ts_perf{perf_sfx}.npy', ts_perf_arr)
+    return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
+
+
 if __name__ == '__main__':
     import argparse
     import platform
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'cxtrnn_seq_v1_gating3_ioZ_a0pt1_nh256_wfix0pt2_PdPmAdAmPdmAdm_fix2_nitr30_AdamGated_wdEps0pt001_lrEps0pt001_gamma0pt5_wd1e-05_sd0'
+        save_name = 'nmrnn_rk3_PdAdPmAmPdmAdm_mixed_sd0'
         config = load_config(save_name)
         config['retrain'] = False
     else:
