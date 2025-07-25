@@ -1041,7 +1041,7 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'nmrnn_rk3_PdAdPmAmPdmAdm_mixed_sd0'
+        save_name = 'nmrnn_rk27_nh256_nz125_relu_PdAdPmAmPdmAdm_sd2'
         config = load_config(save_name)
         config['retrain'] = False
     else:
@@ -1074,7 +1074,7 @@ if __name__ == '__main__':
     ####################################################
     dim_s = config.get('dim_s', 3)
     dim_y = config.get('dim_y', 3)
-    if config['z_list'] is None:
+    if ('z_list' not in config) or (config['z_list'] is None):
         config['z_list'] = get_z_list(config['task_list'], config['epoch_type'])
     fig, axes = plt.subplots(dim_s + dim_y, len(config['task_list']),
                              figsize=(2 * len(config['task_list']), dim_s + dim_y),

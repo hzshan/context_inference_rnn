@@ -220,8 +220,9 @@ def nmrnn_config():
         'dim_z': [125],
         'dim_h': [256],
         'rank': [27],
+        'lr': [0.001],
         'mixed_train': [False],
-        'seed': [0, 1, 2, 3, 4],
+        'seed': [4],
     }
     configs = vary_config(config, config_ranges, mode=['combinatorial', 'sequential'][0])
     save_names = []
