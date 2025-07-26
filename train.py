@@ -368,7 +368,11 @@ def evaluate(model, ts_data_loaders, loss_kwargs, task_model=None, strict=False)
             else:
                 cur_ts_err.append(-1)
             ################################
-            out, states = model(s, z)
+            if isinstance(model, HyperRNN):
+                out, states, _ = model(s, itask_ts)
+            else:
+                out, states = model(s, z)
+            ###############################
             loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
             cur_ts_loss.append(loss.item())
             perf = batch_performance(out, y, lengths, strict=strict)
@@ -1035,15 +1039,184 @@ def train_nmrnn_sequential(seed=0, dim_s=5, dim_y=3, dim_z=50, dim_h=100, rank=5
     return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
 
 
+class HyperRNN(nn.Module):
+    def __init__(self, dim_s=5, dim_y=3, dim_hid=256, alpha=0.1, nonlin='tanh', sig_r=0,
+                 n_task=6, dim_embed=32, dim_chunk=32, dim_hnet=32, dim_o=4000, **kwargs):
+        super(HyperRNN, self).__init__()
+        self.dim_s = dim_s
+        self.dim_y = dim_y
+        self.dim_hid = dim_hid
+        ###################
+        d0, d1 = (dim_s + dim_hid + 1), dim_hid
+        d2, d3 = (dim_hid + 1), dim_y
+        n_chunk = int(np.ceil((d0 * d1 + d2 * d3) / dim_o))
+        self.d0, self.d1, self.d2, self.d3 = d0, d1, d2, d3
+        self.n_chunk = n_chunk
+        ###################
+        self.task_embeddings = nn.Parameter(torch.zeros(n_task, dim_embed))
+        self.chunk_embeddings = nn.Parameter(torch.zeros(n_chunk, dim_chunk))
+        nonlin_layer = getattr(nn, {'tanh': 'Tanh', 'relu': 'ReLU'}[nonlin])()
+        self.hypernet = nn.Sequential(nn.Linear(dim_embed + dim_chunk, dim_hnet), nonlin_layer,
+                                      nn.Linear(dim_hnet, dim_hnet), nonlin_layer,
+                                      nn.Linear(dim_hnet, dim_o))
+        self.alpha = alpha
+        self.dim_hid = dim_hid
+        self.dim_s = dim_s
+        self.dim_y = dim_y
+        self.nonlin = getattr(F, nonlin)
+        self.sig_r = sig_r
+
+    def step(self, s_t, state, Wb_in, Wb_out):
+        ones = torch.ones(s_t.shape[0], 1, device=s_t.device)
+        inp_cat = torch.cat([s_t, self.nonlin(state), ones], dim=-1)
+        tmp = inp_cat @ Wb_in
+        noise = math.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
+        state = (1 - self.alpha) * state + self.alpha * (tmp + noise)
+        hid_cat = torch.cat([self.nonlin(state), ones], dim=-1)
+        output = hid_cat @ Wb_out
+        return output, state
+
+    def hnet_forward(self, itask):
+        task_embed = self.task_embeddings[itask].unsqueeze(0).expand(self.n_chunk, -1)
+        task_chunk_embed = torch.cat([task_embed, self.chunk_embeddings], dim=-1)  # n_chunk, (dim_e + dim_c)
+        hnet_output = self.hypernet(task_chunk_embed).flatten()  # n_chunk x dim_o
+        return hnet_output
+
+    def forward(self, s, itask):
+        hnet_output = self.hnet_forward(itask)
+        Wb_in = hnet_output[:(self.d0 * self.d1)].reshape(self.d0, self.d1)
+        Wb_out = hnet_output[-(self.d2 * self.d3):].reshape(self.d2, self.d3)
+        seq_len, batch_size, _ = s.shape
+        outputs = []
+        states = []
+        state = torch.zeros(batch_size, self.dim_hid, device=s.device)
+        for t in range(seq_len):
+            output, state = self.step(s[t], state, Wb_in, Wb_out)
+            outputs.append(output)
+            states.append(state)
+        outputs = torch.stack(outputs, dim=0)
+        states = torch.stack(states, dim=0)
+        W_hh = Wb_in[self.dim_s:(self.dim_s + self.dim_hid)]
+        return outputs, states, W_hh
+
+
+def train_hyperrnn_sequential(seed=0, dim_s=5, dim_y=3, dim_hid=256, alpha=0.1, nonlin='tanh',
+                              sig_r=0, dim_embed=32, dim_chunk=32, dim_hnet=32, dim_o=4000,
+                              w_fix=1, n_skip=0, reg_act=0, strict=True,
+                              optim='Adam', lr=0.01, weight_decay=0,
+                              beta=0.1, lambda_ortho=0, max_norm=None,
+                              batch_size=256, num_iter=500, n_trials_ts=200,
+                              sig_s=0.05, p_stay=0.9, min_Te=5, nx=2, d_stim=np.pi/2,
+                              epoch_type=1, fixation_type=1, info_type='c', min_Te_R=None, p_stay_R=None,
+                              task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
+                              verbose=True, ckpt_step=10,
+                              save_dir=None, retrain=True, save_ckpt=False, save_after_itask=-1, **kwargs):
+    set_deterministic(seed)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = HyperRNN(dim_s=dim_s, dim_y=dim_y, dim_hid=dim_hid, alpha=alpha,
+                     nonlin=nonlin, sig_r=sig_r, n_task=len(task_list),
+                     dim_embed=dim_embed, dim_chunk=dim_chunk, dim_hnet=dim_hnet, dim_o=dim_o).to(device)
+    if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
+        save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
+        model.load_state_dict(save_dict)
+        tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
+        ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
+        perf_sfx = '_strict' if strict else ''
+        ts_perf_arr = np.load(save_dir + f'/ts_perf{perf_sfx}.npy')
+        return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
+
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad), flush=True)
+    data_kwargs = dict(dim_s=dim_s, dim_y=dim_y, z_list=None, task_list=task_list,
+                       sig_s=sig_s, p_stay=p_stay, min_Te=min_Te, nx=nx, d_stim=d_stim,
+                       epoch_type=epoch_type, fixation_type=fixation_type,
+                       info_type=info_type, min_Te_R=min_Te_R, p_stay_R=p_stay_R)
+    ts_data_loaders = []
+    for itask, task in enumerate(task_list):
+        ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
+        ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=batch_size, collate_fn=collate_fn)
+        ts_data_loaders.append(ts_data_loader)
+
+    loss_kwargs = dict(w_fix=w_fix, n_skip=n_skip, reg_act=reg_act)
+    ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
+    tr_loss_arr = [ts_loss[0]]
+    ts_loss_arr = [[ts_loss[itask]] for itask in range(len(task_list))]
+    ts_perf_arr = [[ts_perf[itask]] for itask in range(len(task_list))]
+    ckpt_list = [deepcopy(model.state_dict())]
+    ####################
+    hnet_output_list = []
+    ####################
+    optimizer = getattr(torch.optim, optim)(model.parameters(), lr=lr, weight_decay=weight_decay)
+    for itask, task in enumerate(task_list):
+        for i_iter in range(num_iter):
+            tr_dataset = TaskDataset(n_trials=batch_size, task=task, **data_kwargs)
+            tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
+            model.train()
+            for ib, cur_batch in enumerate(tr_data_loader):
+                syz, lengths = cur_batch
+                syz = syz.to(device)
+                s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+                out, states, W_hh = model(s, itask)
+                loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
+                ################
+                reg = torch.square(W_hh.T @ W_hh - torch.eye(model.dim_hid, device=W_hh.device)).sum()
+                loss = loss + lambda_ortho * reg
+                ################
+                if itask > 0:
+                    reg = 0
+                    for itask_pre in range(itask):
+                        reg = reg + torch.square(model.hnet_forward(itask_pre) - hnet_output_list[itask_pre]).sum()
+                    loss = loss + beta * reg / itask
+                ################
+                optimizer.zero_grad()
+                loss.backward()
+                if max_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
+                optimizer.step()
+            if (i_iter + 1) % ckpt_step == 0:
+                tr_loss_arr.append(loss.item())
+                if verbose:
+                    print(f'task {task}, iter {i_iter + 1}, train loss: {loss.item():.4f}', flush=True)
+                ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
+                for itask_ts, task_ts in enumerate(task_list):
+                    ts_loss_arr[itask_ts].append(ts_loss[itask_ts])
+                    ts_perf_arr[itask_ts].append(ts_perf[itask_ts])
+                    if verbose:
+                        print(f'test on task {task_ts}: loss {ts_loss[itask_ts]:.4f}, '
+                              f'perf {ts_perf[itask_ts]:.4f}', flush=True)
+                if save_ckpt:
+                    ckpt_list.append(deepcopy(model.state_dict()))
+        ##############
+        hnet_output_list.append(model.hnet_forward(itask).clone().detach())
+        ##############
+        if itask == save_after_itask and save_dir is not None:
+            save_sfx = f'after_itask{itask}'
+            torch.save(model.state_dict(), save_dir + f'/model_{save_sfx}.pth')
+            torch.save(hnet_output_list, save_dir + f'/hnet_output_list_{save_sfx}.pt')
+        ################################################
+    tr_loss_arr = np.array(tr_loss_arr)
+    ts_loss_arr = np.array(ts_loss_arr)
+    ts_perf_arr = np.array(ts_perf_arr)
+    if save_dir is not None:
+        torch.save(model.state_dict(), save_dir + '/model.pth')
+        torch.save(ckpt_list, save_dir + '/ckpt_list.pth')
+        np.save(save_dir + '/tr_loss.npy', tr_loss_arr)
+        np.save(save_dir + '/ts_loss.npy', ts_loss_arr)
+        perf_sfx = '_strict' if strict else ''
+        np.save(save_dir + f'/ts_perf{perf_sfx}.npy', ts_perf_arr)
+    return model, tr_loss_arr, ts_loss_arr, ts_perf_arr
+
+
 if __name__ == '__main__':
     import argparse
     import platform
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'nmrnn_rk27_nh256_nz125_relu_PdAdPmAmPdmAdm_sd2'
+        save_name = 'hyperrnn_dimEm32_dimCh32_dimHy32_dimO2000_beta0_PdAdPmAmPdmAdm_sd0'
         config = load_config(save_name)
-        config['retrain'] = False
+        config['retrain'] = True
+        config['task_list'] = ['PRO_D', 'ANTI_D']
+        config['num_iter'] = 100
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument("--save_name", help="save_name", type=str, default="")
@@ -1092,8 +1265,13 @@ if __name__ == '__main__':
                              min_Te_R=config.get('min_Te_R', None), p_stay_R=config.get('p_stay_R', None))
         syz = torch.tensor(syz[:, None, :], dtype=torch.float32).to(next(model.parameters()).device)
         s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
-        with torch.no_grad():
-            out, _ = model(s, z)
+        ##########################
+        if isinstance(model, HyperRNN):
+            with torch.no_grad():
+                out, _, _ = model(s, itask)
+        else:
+            with torch.no_grad():
+                out, _ = model(s, z)
         ########### plot #########
         axes[0, itask].set_title(task)
         for iax in range(dim_s):

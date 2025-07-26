@@ -255,8 +255,67 @@ def nmrnn_config():
     return configs, save_names
 
 
+def hyperrnn_config():
+    config = dict(seed=0, dim_s=5, dim_y=3, dim_hid=256, alpha=0.1, nonlin='tanh', sig_r=0.05,
+                  dim_embed=32, dim_chunk=32, dim_hnet=32, dim_o=2000,
+                  w_fix=0.2, n_skip=0, reg_act=0, strict=True,
+                  optim='Adam', lr=0.01, weight_decay=1e-5,
+                  beta=1, lambda_ortho=0.001, max_norm=1,
+                  batch_size=256, num_iter=1000, n_trials_ts=200,
+                  sig_s=0.01, p_stay=0.9, min_Te=5, nx=8, d_stim=2*np.pi/8,
+                  epoch_type=1, fixation_type=2, info_type='c', min_Te_R=None, p_stay_R=None,
+                  task_list=['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M'],
+                  verbose=True, ckpt_step=10,
+                  save_dir=None, retrain=True, save_ckpt=False,
+                  train_fn='train_hyperrnn_sequential')
+    config_ranges = {
+        'nonlin': ['relu', 'tanh'], #'tanh', 'relu'
+        'task_list': [
+            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
+                    ],
+        'beta': [1],
+        'lambda_ortho': [0.01],
+        'seed': [0, 1, 2, 3, 4],
+    }
+    configs = vary_config(config, config_ranges, mode=['combinatorial', 'sequential'][0])
+    save_names = []
+    for config in configs:
+        config['sig_s'] = np.sqrt(2 / config['alpha']) * config['sig_s']
+        save_name = 'hyperrnn_v1'
+        save_name += ('_a' + str(config['alpha'])) if config['alpha'] != 0.1 else ''
+        save_name += ('_nh' + str(config['dim_hid'])) if config['dim_hid'] != 256 else ''
+        save_name += ('_dimEm' + str(config['dim_embed'])) if config['dim_embed'] != 32 else ''
+        save_name += ('_dimCh' + str(config['dim_chunk'])) if config['dim_chunk'] != 32 else ''
+        save_name += ('_dimHy' + str(config['dim_hnet'])) if config['dim_hnet'] != 32 else ''
+        save_name += ('_dimO' + str(config['dim_o'])) if config['dim_o'] != 2000 else ''
+        save_name += ('_sigr' + str(config['sig_r'])) if config['sig_r'] != 0.05 else ''
+        save_name += ('_' + str(config['nonlin'])) if config['nonlin'] != 'tanh' else ''
+        save_name += ('_sumbeta' + str(config['beta']))
+        save_name += ('_lmbd' + str(config['lambda_ortho'])) if config['lambda_ortho'] != 0.001 else ''
+        save_name += ('_clip' + str(config['max_norm'])) if config['max_norm'] != 1 else ''
+        save_name += ('_wfix' + str(config['w_fix'])) if config['w_fix'] != 0.2 else ''
+        save_name += ('_nskip' + str(config['n_skip'])) if config['n_skip'] != 0 else ''
+        save_name += '_' + ''.join([cur.split('_')[0][0] + cur.split('_')[1].lower() for cur in config['task_list']])
+        save_name += ('_pstay' + str(config['p_stay'])) if config['p_stay'] != 0.9 else ''
+        save_name += ('_minT' + str(config['min_Te'])) if config['min_Te'] != 5 else ''
+        save_name += ('_minTR' + str(config['min_Te_R'])) if config['min_Te_R'] is not None else ''
+        save_name += ('_pstayR' + str(config['p_stay_R'])) if config['p_stay_R'] is not None else ''
+        save_name += ('_fix' + str(config['fixation_type'])) if config['fixation_type'] != 2 else ''
+        save_name += ('_nx' + str(config['nx'])) if config['nx'] != 8 else ''
+        save_name += ('_nitr' + str(config['num_iter'])) if config['num_iter'] != 1000 else ''
+        save_name += ('_' + str(config['optim'])) if config['optim'] != 'Adam' else ''
+        save_name += ('_lr' + str(config['lr'])) if config['lr'] != 0.01 else ''
+        save_name += ('_wd' + str(config['weight_decay'])) if config['weight_decay'] != 1e-5 else ''
+        save_name += '_sd' + str(config['seed'])
+        save_names.append(save_name.replace('.', 'pt'))
+    return configs, save_names
+
+
 if __name__ == '__main__':
-    configs, save_names = nmrnn_config() #leakyrnn_config()  #cxtrnn_config()
+    configs, save_names = hyperrnn_config()  #nmrnn_config() #leakyrnn_config()  #cxtrnn_config()
     for config, save_name in zip(configs, save_names):
         # if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
         #     continue
