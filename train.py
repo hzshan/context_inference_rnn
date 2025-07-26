@@ -412,7 +412,7 @@ def train_cxtrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3, alpha=0.5, ini
                    gating_type=gating_type, share_io=share_io, nonlin=nonlin, sig_r=sig_r).to(device)
 
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
-        save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
+        save_dict = torch.load(save_dir + '/model.pth', map_location=device)
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
@@ -779,7 +779,7 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
                      alpha=alpha, nonlin=nonlin, sig_r=sig_r).to(device)
 
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
-        save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
+        save_dict = torch.load(save_dir + '/model.pth', map_location=device)
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
@@ -964,7 +964,7 @@ def train_nmrnn_sequential(seed=0, dim_s=5, dim_y=3, dim_z=50, dim_h=100, rank=5
     model = NMRNN(dim_s=dim_s, dim_y=dim_y, dim_c=len(task_list), dim_z=dim_z, dim_h=dim_h,
                   rank=rank, sig_r=sig_r, alpha_z=alpha_z, alpha_h=alpha_h, nonlin=nonlin).to(device)
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
-        save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
+        save_dict = torch.load(save_dir + '/model.pth', map_location=device)
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')
@@ -1117,7 +1117,7 @@ def train_hyperrnn_sequential(seed=0, dim_s=5, dim_y=3, dim_hid=256, alpha=0.1, 
                      nonlin=nonlin, sig_r=sig_r, n_task=len(task_list),
                      dim_embed=dim_embed, dim_chunk=dim_chunk, dim_hnet=dim_hnet, dim_o=dim_o).to(device)
     if save_dir is not None and os.path.isfile(save_dir + '/model.pth') and not retrain:
-        save_dict = torch.load(save_dir + '/model.pth', map_location=torch.device(device))
+        save_dict = torch.load(save_dir + '/model.pth', map_location=device)
         model.load_state_dict(save_dict)
         tr_loss_arr = np.load(save_dir + '/tr_loss.npy')
         ts_loss_arr = np.load(save_dir + '/ts_loss.npy')

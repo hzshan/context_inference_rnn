@@ -3,8 +3,8 @@ import pickle
 import numpy as np
 from copy import deepcopy
 from torch.utils.data import DataLoader
-from train import train_cxtrnn_sequential, evaluate, task_epoch, get_z_list, TaskDataset, collate_fn, LeakyRNN
-from train import AdamWithProj, masked_mse_loss
+from train import train_cxtrnn_sequential, evaluate, task_epoch, get_z_list, TaskDataset, collate_fn
+from train import AdamWithProj, masked_mse_loss, LeakyRNN, HyperRNN
 from train_config import load_config
 
 
@@ -95,9 +95,9 @@ def train_leakyrnn_sequential_few_shot(save_name):
     else:
         use_proj = True
         save_sfx = 'after_itask2'
-        save_dict = torch.load(config['save_dir'] + f'/model_{save_sfx}.pth', map_location=torch.device(device))
+        save_dict = torch.load(config['save_dir'] + f'/model_{save_sfx}.pth', map_location=device)
         model.load_state_dict(save_dict)
-        proj_mtrx_dict = torch.load(config['save_dir'] + f'/proj_mtrx_dict_{save_sfx}.pt')
+        proj_mtrx_dict = torch.load(config['save_dir'] + f'/proj_mtrx_dict_{save_sfx}.pt', map_location=device)
     ########################################
     data_kwargs = dict(dim_s=config['dim_s'], dim_y=config['dim_y'], z_list=None, task_list=config['task_list'],
                        sig_s=config['sig_s'], p_stay=config['p_stay'], min_Te=config['min_Te'], nx=config['nx'],
@@ -144,6 +144,85 @@ def train_leakyrnn_sequential_few_shot(save_name):
     return
 
 
+def train_hyperrnn_sequential_few_shot(save_name):
+    INIT = False
+    if save_name[:4] == 'INIT':
+        INIT = True
+        save_name = save_name[4:]
+
+    config = load_config(save_name)
+    config['retrain'] = False
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = HyperRNN(dim_s=config['dim_s'], dim_y=config['dim_y'], dim_hid=config['dim_hid'], alpha=config['alpha'],
+                     nonlin=config['nonlin'], sig_r=config['sig_r'], n_task=len(config['task_list']),
+                     dim_embed=config['dim_embed'], dim_chunk=config['dim_chunk'],
+                     dim_hnet=config['dim_hnet'], dim_o=config['dim_o']).to(device)
+    if INIT:
+        hnet_output_list = []
+    else:
+        save_sfx = 'after_itask2'
+        save_dict = torch.load(config['save_dir'] + f'/model_{save_sfx}.pth', map_location=device)
+        model.load_state_dict(save_dict)
+        hnet_output_list = torch.load(config['save_dir'] + f'/hnet_output_list_{save_sfx}.pt', map_location=device)
+    ########################################
+    data_kwargs = dict(dim_s=config['dim_s'], dim_y=config['dim_y'], z_list=None, task_list=config['task_list'],
+                       sig_s=config['sig_s'], p_stay=config['p_stay'], min_Te=config['min_Te'], nx=config['nx'],
+                       d_stim=config['d_stim'], epoch_type=config['epoch_type'], fixation_type=config['fixation_type'],
+                       info_type=config['info_type'], min_Te_R=config['min_Te_R'], p_stay_R=config['p_stay_R'])
+    ########################################
+    n_trials_ts = 200
+    ts_data_loaders = []
+    for itask, task in enumerate(config['task_list']):
+        ts_dataset = TaskDataset(n_trials=n_trials_ts, task=task, **data_kwargs)
+        ts_data_loader = DataLoader(dataset=ts_dataset, batch_size=n_trials_ts, collate_fn=collate_fn)
+        ts_data_loaders.append(ts_data_loader)
+    loss_kwargs = dict(w_fix=config['w_fix'], n_skip=config['n_skip'], reg_act=config.get('reg_act', 0))
+    strict = True
+    ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
+    ########################################
+    ts_loss_arr, ts_perf_arr = [ts_loss], [ts_perf]
+    task_new = config['task_list'][-1]
+    itask_new = (len(config['task_list']) - 1) if not INIT else 0
+    n_trials_tr = 512
+    batch_size = 1
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], weight_decay=config['weight_decay'])
+    tr_dataset = TaskDataset(n_trials=n_trials_tr, task=task_new, **data_kwargs)
+    tr_data_loader = DataLoader(dataset=tr_dataset, batch_size=batch_size, collate_fn=collate_fn)
+    model.train()
+    dim_s, dim_y = config['dim_s'], config['dim_y']
+    for ib, cur_batch in enumerate(tr_data_loader):
+        print(f'batch {ib}', flush=True)
+        syz, lengths = cur_batch
+        syz = syz.to(device)
+        s, y, z = syz[..., :dim_s], syz[..., dim_s:(dim_s + dim_y)], syz[..., (dim_s + dim_y):]
+        out, states, W_hh = model(s, itask_new)
+        loss = masked_mse_loss(out, model.nonlin(states), y, lengths, **loss_kwargs)
+        ################
+        reg = torch.square(W_hh.T @ W_hh - torch.eye(model.dim_hid, device=W_hh.device)).sum()
+        loss = loss + config['lambda_ortho'] * reg
+        ################
+        if itask_new > 0:
+            reg = 0
+            for itask_pre in range(itask_new):
+                reg = reg + torch.square(model.hnet_forward(itask_pre) - hnet_output_list[itask_pre]).sum()
+            loss = loss + config['beta'] * reg / itask_new
+        ################
+        optimizer.zero_grad()
+        loss.backward()
+        if config['max_norm'] is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['max_norm'])
+        optimizer.step()
+        ts_loss, ts_perf, _ = evaluate(model, ts_data_loaders, loss_kwargs, strict=strict)
+        ts_loss_arr.append(ts_loss)
+        ts_perf_arr.append(ts_perf)
+    ts_loss_arr = np.array(ts_loss_arr)
+    ts_perf_arr = np.array(ts_perf_arr)
+    save_sfx = '_INIT' if INIT else ''
+    np.save(config['save_dir'] + f'/ts_loss_few_shot{save_sfx}.npy', ts_loss_arr)
+    np.save(config['save_dir'] + f'/ts_perf_few_shot{save_sfx}.npy', ts_perf_arr)
+    return
+
+
 if __name__ == '__main__':
     import argparse
     import platform
@@ -157,5 +236,7 @@ if __name__ == '__main__':
 
     if 'cxtrnn' in save_name:
         train_cxtrnn_sequential_few_shot(save_name)
+    elif 'hyperrnn' in save_name:
+        train_hyperrnn_sequential_few_shot(save_name)
     else:
         train_leakyrnn_sequential_few_shot(save_name)

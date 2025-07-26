@@ -269,15 +269,16 @@ def hyperrnn_config():
                   save_dir=None, retrain=True, save_ckpt=False,
                   train_fn='train_hyperrnn_sequential')
     config_ranges = {
-        'nonlin': ['relu', 'tanh'], #'tanh', 'relu'
+        'nonlin': ['relu'], #'tanh', 'relu'
         'task_list': [
-            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
+            ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
+            # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
-        'beta': [1],
-        'lambda_ortho': [0.01],
+        'save_after_itask': [2],
         'seed': [0, 1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges, mode=['combinatorial', 'sequential'][0])
@@ -315,17 +316,18 @@ def hyperrnn_config():
 
 
 if __name__ == '__main__':
-    configs, save_names = hyperrnn_config()  #nmrnn_config() #leakyrnn_config()  #cxtrnn_config()
-    for config, save_name in zip(configs, save_names):
-        # if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
-        #     continue
-        save_config(config, save_name)
-        run_main(save_name, num_cpu=1, num_gpu=1)
+    # configs, save_names = hyperrnn_config()  #nmrnn_config() #leakyrnn_config()  #cxtrnn_config()
+    # for config, save_name in zip(configs, save_names):
+    #     # if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
+    #     #     continue
+    #     save_config(config, save_name)
+    #     run_main(save_name, num_cpu=1, num_gpu=1)
 
-    # for task_order in ['PsPmAsAm', 'PsAsPmAm']:
-    #     for seed in range(5):
-    #         save_name = f'INITleakyrnn_v1_proj_relu_{task_order}_AdamWithProj_sd{seed}'
-    #         run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)
+    for task_order in ['PsAsPmAm', 'PsPmAsAm']:
+        for seed in range(5):
+            save_name = f'INIThyperrnn_v1_relu_sumbeta1_{task_order}_sd{seed}'
+            # save_name = f'INITleakyrnn_v1_proj_relu_{task_order}_AdamWithProj_sd{seed}'
+            run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)
 
     # for task_order in ['PsPmAs', 'PsAsPm']:
     #     for seed in range(5):
