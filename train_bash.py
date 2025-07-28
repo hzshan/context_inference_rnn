@@ -269,16 +269,18 @@ def hyperrnn_config():
                   save_dir=None, retrain=True, save_ckpt=False,
                   train_fn='train_hyperrnn_sequential')
     config_ranges = {
-        'nonlin': ['relu'], #'tanh', 'relu'
+        'nonlin': ['tanh', 'relu'], #'tanh', 'relu'
         'task_list': [
-            ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
-            ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
-            # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            # ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
+            # ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
+            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
                     ],
-        'save_after_itask': [2],
+        # 'save_after_itask': [2],
+        'lr': [0.001],
+        'beta': [0],
         'seed': [0, 1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges, mode=['combinatorial', 'sequential'][0])
@@ -325,7 +327,7 @@ if __name__ == '__main__':
 
     for task_order in ['PsAsPmAm', 'PsPmAsAm']:
         for seed in range(5):
-            save_name = f'INIThyperrnn_v1_relu_sumbeta1_{task_order}_sd{seed}'
+            save_name = f'hyperrnn_v1_relu_sumbeta1_{task_order}_lr0pt001_sd{seed}'
             # save_name = f'INITleakyrnn_v1_proj_relu_{task_order}_AdamWithProj_sd{seed}'
             run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)
 

@@ -1212,11 +1212,9 @@ if __name__ == '__main__':
     from train_config import load_config
 
     if platform.system() == 'Windows':
-        save_name = 'hyperrnn_dimEm32_dimCh32_dimHy32_dimO2000_beta0_PdAdPmAmPdmAdm_sd0'
+        save_name = 'hyperrnn_v1_relu_sumbeta1_PdAdPmAmPdmAdm_lr0pt001_sd0'
         config = load_config(save_name)
-        config['retrain'] = True
-        config['task_list'] = ['PRO_D', 'ANTI_D']
-        config['num_iter'] = 100
+        config['retrain'] = False
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument("--save_name", help="save_name", type=str, default="")
