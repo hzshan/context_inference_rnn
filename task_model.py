@@ -2,10 +2,16 @@ import numpy as np
 import sklearn.cluster
 from scipy.special import logsumexp
 from task_generation import *
-# Terminology: 
-# LL: log likelihood of each trial
-# total_LL: sum of LLs across trials
-# LLpT: log likelihood per trial, total_LL / n_trials
+
+"""
+Scripts for learning and inference of the task model.
+
+Terminology: 
+LL: log likelihood of each trial
+total_LL: sum of LLs across trials
+LLpT: log likelihood per trial, total_LL / n_trials
+
+"""
 
 
 S_Y_COMBINED_DIM = 8  # dimension of stim + response
