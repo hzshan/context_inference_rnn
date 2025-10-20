@@ -12,6 +12,9 @@ from task_generation import compose_trial, make_delay_or_fixation_epoch
 from task_model import TaskModel
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+"""
+Scripts for setting up and training the RNN and some baseline methods.
+"""
 
 
 def task_epoch(task, epoch_type=1):
@@ -56,9 +59,28 @@ def get_z_list(task_list, epoch_type):
 
 
 class CXTRNN(nn.Module):
+    """
+    Context-dependent RNN with input, recurrent and output weights controlled
+    by a context signal.
+    """
     def __init__(self, dim_s=3, dim_y=3, dim_z=6, rank=6, dim_hid=50, alpha=0.5,
-                 gating_type='nl', share_io=True, nonlin='tanh', sig_r=0, init_scale=None,
-                 **kwargs):
+                 gating_type='nl', share_io=True, nonlin='tanh', sig_r=0,
+                 init_scale=None, **kwargs):
+        """
+        Initialize the CXTRNN model.
+        Args:
+            dim_s: dimension of input
+            dim_y: dimension of output
+            dim_z: dimension of context signal
+            rank: rank of the low-rank recurrent weight matrix
+            dim_hid: dimension of the hidden state
+            alpha: leak rate
+            gating_type: type of gating for context modulation
+            share_io: whether to share input/output layers across contexts
+            nonlin: nonlinearity type
+            sig_r: standard deviation of recurrent noise
+            init_scale: scale for weight initialization
+        """
         super(CXTRNN, self).__init__()
         if init_scale is None:
             init_scale = (1 / dim_hid) ** 0.25
@@ -69,9 +91,11 @@ class CXTRNN(nn.Module):
         self.rank = rank
         self.dim_z = dim_z
         num_io = 1 if share_io else dim_z
-        self.W_in = nn.Parameter(torch.randn(num_io, dim_hid, dim_s) * math.sqrt(2 / (dim_hid + dim_s)))
+        self.W_in = nn.Parameter(torch.randn(num_io, dim_hid, dim_s) *
+                                  math.sqrt(2 / (dim_hid + dim_s)))
         self.b_in = nn.Parameter(torch.zeros(num_io, dim_hid))
-        self.W_out = nn.Parameter(torch.randn(num_io, dim_y, dim_hid) * math.sqrt(2 / (dim_hid + dim_y)))
+        self.W_out = nn.Parameter(torch.randn(num_io, dim_y, dim_hid) *
+                                   math.sqrt(2 / (dim_hid + dim_y)))
         self.b_out = nn.Parameter(torch.zeros(num_io, dim_y))
         if gating_type in ['l', 'nl']:
             self.nm_layer = nn.Linear(dim_z, rank)
@@ -101,7 +125,8 @@ class CXTRNN(nn.Module):
 
     def gating(self, z_t):
         if isinstance(self.gating_type, int):
-            return z_t.unsqueeze(-1).expand(-1, -1, self.gating_type).reshape(z_t.shape[0], -1)
+            return z_t.unsqueeze(-1).expand(
+                -1, -1, self.gating_type).reshape(z_t.shape[0], -1)
         elif self.gating_type == 'l':
             return self.nm_layer(z_t)
         elif self.gating_type == 'nl':
@@ -112,7 +137,8 @@ class CXTRNN(nn.Module):
             raise NotImplementedError
 
     def step(self, s_t, z_t, state):
-        tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t), self.U, self.V, self.nonlin(state))
+        tmp = torch.einsum('br,hr,kr,bk->bh', self.gating(z_t),
+                           self.U, self.V, self.nonlin(state))
         tmp = tmp + math.sqrt(2 / self.alpha) * self.sig_r * torch.randn(*tmp.shape).to(tmp.device)
         state = (1 - self.alpha) * state + self.alpha * (tmp + self.input_layer(s_t, z_t))
         output = self.output_layer(self.nonlin(state), z_t)
@@ -133,6 +159,9 @@ class CXTRNN(nn.Module):
 
 
 class LeakyRNN(nn.Module):
+    """
+    Simple leaky RNN model.
+    """
     def __init__(self, dim_i=3, dim_y=3, dim_hid=50, alpha=0.5, nonlin='tanh', sig_r=0, **kwargs):
         super(LeakyRNN, self).__init__()
         init_scale = math.sqrt(2 / (dim_i + dim_hid + 1 + dim_hid))
@@ -286,6 +315,9 @@ def set_deterministic(seed):
 
 @torch.no_grad()
 def task_model_inference(task_model, c, obs):
+    """
+    Uses the task model to infer the context signal from observations.
+    """
     device = obs.device
     Q = torch.tensor(task_model.Q, device=device).float()
     Lambda = torch.tensor(task_model.Lambda, device=device).float()
@@ -711,6 +743,9 @@ def cov_to_proj(cov, alpha):
 
 @torch.no_grad()
 def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_cov):
+    """
+    Needed for implementing orthogonal weight project (OWP).
+    """
     device = next(model.parameters()).device
     dim_hid = model.dim_hid
     dim_s, dim_y = vl_data_loader.dataset.dim_s, vl_data_loader.dataset.dim_y
@@ -741,6 +776,9 @@ def compute_proj_matrices(model, vl_data_loader, proj_mtrx_dict, itask, alpha_co
 
 
 def compute_fisher_info(model, vl_data_loader, loss_kwargs):
+    """
+    Needed for implementing elastic weight consolidation (EWC).
+    """
     device = next(model.parameters()).device
     dim_s, dim_y = vl_data_loader.dataset.dim_s, vl_data_loader.dataset.dim_y
     fisher_info = {n: torch.zeros_like(p) for n, p in model.named_parameters() if p.requires_grad}
@@ -897,6 +935,9 @@ def train_leakyrnn_sequential(seed=0, dim_hid=50, dim_s=5, dim_y=3,
 
 
 class NMRNN(nn.Module):
+    """
+    neuromodulated RNN (Costacurta et al., 2024)
+    """
     def __init__(self, dim_s=5, dim_y=3, dim_c=5, dim_z=50, dim_h=50, rank=3, sig_r=0,
                  alpha_z=0.01, alpha_h=0.1, nonlin='tanh', **kwargs):
         super(NMRNN, self).__init__()
@@ -1040,6 +1081,9 @@ def train_nmrnn_sequential(seed=0, dim_s=5, dim_y=3, dim_z=50, dim_h=100, rank=5
 
 
 class HyperRNN(nn.Module):
+    """
+    Our implementation of a hypernetwork RNN (von Oswald et al., 2020)
+    """
     def __init__(self, dim_s=5, dim_y=3, dim_hid=256, alpha=0.1, nonlin='tanh', sig_r=0,
                  n_task=6, dim_embed=32, dim_chunk=32, dim_hnet=32, dim_o=4000, **kwargs):
         super(HyperRNN, self).__init__()
