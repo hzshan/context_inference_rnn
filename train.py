@@ -72,7 +72,7 @@ class CXTRNN(nn.Module):
             dim_s: dimension of sensory input
             dim_y: dimension of target output
             dim_z: dimension of context signal
-            rank: rank of the low-rank recurrent weight matrix
+            rank: total rank of the recurrent weight matrix
             dim_hid: dimension of the hidden state
             alpha: leak rate
             gating_type: type of gating for context modulation
