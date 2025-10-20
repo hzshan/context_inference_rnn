@@ -141,9 +141,9 @@ def leakyrnn_config():
     config_ranges = {
         'nonlin': ['relu'], #'tanh', 'relu'
         'task_list': [
-            ['PRO_M', 'ANTI_M'],
+            # ['PRO_M', 'ANTI_M'],
             # ['PRO_D', 'ANTI_D'], ['PRO_D', 'PRO_M'], ['PRO_M', 'ANTI_M'], ['PRO_DM', 'PRO_D'],
-            # ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
+            ['PRO_S', 'ANTI_S', 'PRO_M', 'ANTI_M'],
             # ['PRO_S', 'PRO_M', 'ANTI_S', 'ANTI_M'],
             # ['PRO_S', 'ANTI_S', 'PRO_M'],
             # ['PRO_S', 'PRO_M', 'ANTI_S'],
@@ -159,12 +159,12 @@ def leakyrnn_config():
         # 'ewc_lambda': [5e4],
         # 'ewc_lambda': [1e5],
         ######################
-        # 'save_after_itask': [2],
-        'ckpt_step': [1],
+        'save_after_itask': [2],
+        # 'ckpt_step': [1],
         # 'num_iter': [10],
         ######################
         'strict': [True],
-        'seed': [0, 1, 2],  #[0, 1, 2, 3, 4],
+        'seed': [3, 4], #[0, 1, 2],  #[0, 1, 2, 3, 4],
     }
     configs = vary_config(config, config_ranges,
                           mode=['combinatorial', 'sequential'][0])
@@ -212,7 +212,8 @@ def nmrnn_config():
     config_ranges = {
         'nonlin': ['relu'], #'tanh', 'relu'
         'task_list': [
-            ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
+            ['PRO_M', 'ANTI_M'],
+            # ['PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_D', 'PRO_M', 'ANTI_D', 'ANTI_M', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_M', 'PRO_D', 'ANTI_M', 'ANTI_D', 'PRO_DM', 'ANTI_DM'],
             # ['PRO_DM', 'ANTI_DM', 'PRO_D', 'ANTI_D', 'PRO_M', 'ANTI_M'],
@@ -222,7 +223,7 @@ def nmrnn_config():
         'rank': [27],
         'lr': [0.001],
         'mixed_train': [False],
-        'seed': [4],
+        'seed': [0, 1, 2],
     }
     configs = vary_config(config, config_ranges, mode=['combinatorial', 'sequential'][0])
     save_names = []
@@ -318,17 +319,18 @@ def hyperrnn_config():
 
 
 if __name__ == '__main__':
-    # configs, save_names = hyperrnn_config()  #nmrnn_config() #leakyrnn_config()  #cxtrnn_config()
+    # configs, save_names = leakyrnn_config()  #nmrnn_config() #leakyrnn_config()  #cxtrnn_config()
     # for config, save_name in zip(configs, save_names):
     #     # if os.path.isfile(f'./saved_models/{save_name}/ts_perf_strict.npy'):
     #     #     continue
     #     save_config(config, save_name)
     #     run_main(save_name, num_cpu=1, num_gpu=1)
 
-    for task_order in ['PsAsPmAm', 'PsPmAsAm']:
+    for task_order in ['PsAsPmAm']:  # 'PsPmAsAm'
         for seed in range(5):
-            save_name = f'hyperrnn_v1_relu_sumbeta1_{task_order}_lr0pt001_sd{seed}'
+            # save_name = f'hyperrnn_v1_relu_sumbeta1_{task_order}_lr0pt001_sd{seed}'
             # save_name = f'INITleakyrnn_v1_proj_relu_{task_order}_AdamWithProj_sd{seed}'
+            save_name = f'leakyrnn_v1_relu_{task_order}_AdamWithProj_sd{seed}'
             run_main(save_name, num_cpu=1, num_gpu=1, cluster=True, train_few_shot=True)
 
     # for task_order in ['PsPmAs', 'PsAsPm']:

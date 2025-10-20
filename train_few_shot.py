@@ -89,15 +89,16 @@ def train_leakyrnn_sequential_few_shot(save_name):
     model = LeakyRNN(dim_i=(config['dim_s'] + len(config['task_list'])), dim_y=config['dim_y'],
                      dim_hid=config['dim_hid'], alpha=config['alpha'], nonlin=config['nonlin'],
                      sig_r=config['sig_r']).to(device)
-    if INIT:
-        use_proj = False
-        proj_mtrx_dict = dict(cov_1=0, cov_2=0, cov_3=0, cov_4=0, proj_1=None, proj_2=None, proj_3=None, proj_4=None)
-    else:
-        use_proj = True
-        save_sfx = 'after_itask2'
-        save_dict = torch.load(config['save_dir'] + f'/model_{save_sfx}.pth', map_location=device)
+    use_proj = False
+    proj_mtrx_dict = dict(cov_1=0, cov_2=0, cov_3=0, cov_4=0, proj_1=None, proj_2=None, proj_3=None, proj_4=None)
+
+    if not INIT:
+        save_dict = torch.load(config['save_dir'] + f'/model_after_itask2.pth', map_location=device)
         model.load_state_dict(save_dict)
-        proj_mtrx_dict = torch.load(config['save_dir'] + f'/proj_mtrx_dict_{save_sfx}.pt', map_location=device)
+        use_proj = config['use_proj']
+        if use_proj:
+            proj_mtrx_dict = torch.load(config['save_dir'] + f'/proj_mtrx_dict_after_itask2.pt', map_location=device)
+
     ########################################
     data_kwargs = dict(dim_s=config['dim_s'], dim_y=config['dim_y'], z_list=None, task_list=config['task_list'],
                        sig_s=config['sig_s'], p_stay=config['p_stay'], min_Te=config['min_Te'], nx=config['nx'],
