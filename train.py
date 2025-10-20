@@ -69,8 +69,8 @@ class CXTRNN(nn.Module):
         """
         Initialize the CXTRNN model.
         Args:
-            dim_s: dimension of input
-            dim_y: dimension of output
+            dim_s: dimension of sensory input
+            dim_y: dimension of target output
             dim_z: dimension of context signal
             rank: rank of the low-rank recurrent weight matrix
             dim_hid: dimension of the hidden state
