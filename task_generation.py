@@ -1,6 +1,8 @@
 import numpy as np
 
 """
+Scripts for generating the tasks.
+
 Notations:
 Te: duration of epoch
 Tt: duration of trial
