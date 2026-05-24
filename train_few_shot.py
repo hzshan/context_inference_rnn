@@ -93,11 +93,12 @@ def train_leakyrnn_sequential_few_shot(save_name):
     proj_mtrx_dict = dict(cov_1=0, cov_2=0, cov_3=0, cov_4=0, proj_1=None, proj_2=None, proj_3=None, proj_4=None)
 
     if not INIT:
-        save_dict = torch.load(config['save_dir'] + f'/model_after_itask2.pth', map_location=device)
+        save_after_itask = config['save_after_itask']
+        save_dict = torch.load(config['save_dir'] + f'/model_after_itask{save_after_itask}.pth', map_location=device)
         model.load_state_dict(save_dict)
         use_proj = config['use_proj']
         if use_proj:
-            proj_mtrx_dict = torch.load(config['save_dir'] + f'/proj_mtrx_dict_after_itask2.pt', map_location=device)
+            proj_mtrx_dict = torch.load(config['save_dir'] + f'/proj_mtrx_dict_after_itask{save_after_itask}.pt', map_location=device)
 
     ########################################
     data_kwargs = dict(dim_s=config['dim_s'], dim_y=config['dim_y'], z_list=None, task_list=config['task_list'],
